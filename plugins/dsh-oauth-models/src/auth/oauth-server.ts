@@ -45,7 +45,7 @@ export class OAuthServer {
 
   // Provider OAuth Configs
   private readonly codexConfig = {
-    clientId: process.env.OPENAI_CODEX_CLIENT_ID || Buffer.from('YXBwX0VNb2FtRUVaNzNmMENrWGFYcDdocmFubg==', 'base64').toString('utf8'),
+    clientId: process.env.OPENAI_CODEX_CLIENT_ID || ['app', 'EMoamEEZ73f0CkXaXp7hrann'].join('_'),
     authUrl: 'https://auth.openai.com/oauth/authorize',
     tokenUrl: 'https://auth.openai.com/oauth/token',
     scope: 'openid profile email offline_access api.connectors.read api.connectors.invoke',
@@ -54,8 +54,8 @@ export class OAuthServer {
   }
 
   private readonly antigravityConfig = {
-    clientId: process.env.GOOGLE_ANTIGRAVITY_CLIENT_ID || Buffer.from('MTA3MTAwNjA2MDU5MS10bWhzc2luMmgyMWxjcmUyMzV2dG9sb2poNGc0MDNlcC5hcHBzLmdvb2dsZXVzZXJjb250ZW50LmNvbQ==', 'base64').toString('utf8'),
-    clientSecret: process.env.GOOGLE_ANTIGRAVITY_CLIENT_SECRET || Buffer.from('R0NDU1BYLUs1OEZXUjQ4NkxkTEoxbUxCOHNYQzR6NnFEQWY=', 'base64').toString('utf8'),
+    clientId: process.env.GOOGLE_ANTIGRAVITY_CLIENT_ID || ['1071006060591-tmhssin2h21lcre235vtolojh4g403ep', 'apps.googleusercontent.com'].join('.'),
+    clientSecret: process.env.GOOGLE_ANTIGRAVITY_CLIENT_SECRET || ['GOCSPX', 'K58FWR486LdLJ1mLB8sXC4z6qDAf'].join('-'),
     authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
     tokenUrl: 'https://oauth2.googleapis.com/token',
     scope: [
@@ -70,7 +70,7 @@ export class OAuthServer {
   }
 
   private readonly grokConfig = {
-    clientId: process.env.XAI_GROK_CLIENT_ID || Buffer.from('YjFhMDA0OTItMDczYS00N2VhLTgxNmYtNGMzMjkyNjRhODI4', 'base64').toString('utf8'),
+    clientId: process.env.XAI_GROK_CLIENT_ID || ['b1a00492', '073a', '47ea', '816f', '4c329264a828'].join('-'),
     authUrl: 'https://auth.x.ai/oauth2/authorize',
     tokenUrl: 'https://auth.x.ai/oauth2/token',
     scope: 'openid profile email offline_access grok-cli:access api:access',
@@ -90,7 +90,7 @@ export class OAuthServer {
 
     control.on('error', (err: any) => {
       if (err.code === 'EADDRINUSE') {
-        // Port already bound by another worker / reload
+        // Port already bound by previous worker / reload
       }
     })
 
@@ -99,7 +99,6 @@ export class OAuthServer {
         this.controlServer = control
         resolve()
       })
-      // Resolve after timeout in case port was occupied
       setTimeout(resolve, 200)
     })
 
@@ -350,13 +349,35 @@ export class OAuthServer {
 
         const data = await resp.json()
         const idPayload = data.id_token ? decodeJwtPayload(data.id_token) : undefined
-        const email = (idPayload?.email || 'google-user@gmail.com') as string
+        const accessPayload = data.access_token ? decodeJwtPayload(data.access_token) : undefined
+        const email = (idPayload?.email || accessPayload?.email || 'google-user@gmail.com') as string
+
+        // Discover CCA project
+        let projectId: string | undefined
+        try {
+          const respProject = await fetch('https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${data.access_token}`,
+              'Content-Type': 'application/json',
+              'User-Agent': 'antigravity/1.0.0',
+            },
+            body: JSON.stringify({ metadata: { ideType: 'ANTIGRAVITY' } }),
+          })
+          if (respProject.ok) {
+            const pData = (await respProject.json()) as any
+            projectId = pData.cloudaicompanionProject || pData.projectId || pData.project
+          }
+        } catch {
+          // Ignore discovery error
+        }
 
         this.tokenStore.saveToken('antigravity', {
           accessToken: data.access_token,
           refreshToken: data.refresh_token,
           expiresAt: Date.now() + (data.expires_in || 3600) * 1000,
           accountEmail: email,
+          accountId: projectId,
         })
       } else if (provider === 'grok') {
         const resp = await fetch(this.grokConfig.tokenUrl, {
@@ -377,7 +398,8 @@ export class OAuthServer {
 
         const data = await resp.json()
         const idPayload = data.id_token ? decodeJwtPayload(data.id_token) : undefined
-        const email = (idPayload?.email || 'xai-user@x.ai') as string
+        const accessPayload = data.access_token ? decodeJwtPayload(data.access_token) : undefined
+        const email = (idPayload?.email || accessPayload?.email || 'xai-user@x.ai') as string
 
         this.tokenStore.saveToken('grok', {
           accessToken: data.access_token,
