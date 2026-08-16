@@ -57,7 +57,7 @@ export class CodexAdapter extends LlmAdapter {
       return []
     }
 
-    // 1. Synchronize dynamically from active Codex OAuth session cache
+    // Synchronize dynamically from active Codex OAuth session cache files
     const sessionCachePaths = [
       path.join(os.homedir(), '.codex', 'models_cache.json'),
       path.join(os.homedir(), '.codex', 'cc-switch-model-catalog.json'),
@@ -100,18 +100,15 @@ export class CodexAdapter extends LlmAdapter {
 
   public override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
     const meta = this.dynamicModels.get(model)
-    const isReasoning = Boolean(meta?.supportedReasoningLevels && meta.supportedReasoningLevels.length > 0)
-      || model.startsWith('o1') || model.startsWith('o3') || model.startsWith('gpt-5')
+    const hasConfigurableEfforts = Boolean(meta?.supportedReasoningLevels && meta.supportedReasoningLevels.length > 0)
 
-    const efforts = meta?.supportedReasoningLevels?.map(r => ({
-      id: r.effort,
-      name: r.effort.charAt(0).toUpperCase() + r.effort.slice(1),
-      description: r.description,
-    })) || (isReasoning ? [
-      { id: 'low', name: 'Low' },
-      { id: 'medium', name: 'Medium' },
-      { id: 'high', name: 'High' },
-    ] : undefined)
+    const efforts = hasConfigurableEfforts
+      ? meta!.supportedReasoningLevels!.map(r => ({
+          id: r.effort,
+          name: r.effort.charAt(0).toUpperCase() + r.effort.slice(1),
+          description: r.description,
+        }))
+      : undefined
 
     return Promise.resolve({
       provider,
@@ -121,25 +118,28 @@ export class CodexAdapter extends LlmAdapter {
         contextWindow: meta?.contextWindow && meta.contextWindow > 0 ? meta.contextWindow : 272000,
       },
       defaultMaxTokens: meta?.defaultMaxTokens && meta.defaultMaxTokens > 0 ? meta.defaultMaxTokens : 65536,
-      reasoning: isReasoning && efforts
+      reasoning: efforts
         ? {
             efforts,
-            defaultEffort: meta?.defaultReasoningLevel || 'medium',
+            defaultEffort: meta?.defaultReasoningLevel || efforts[0]?.id || 'medium',
           }
         : undefined,
     })
   }
 
   public override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
-    const model = options.model || 'gpt-5.6-sol'
+    const model = options.model
+    if (!model) {
+      throw new Error('No model specified for Codex adapter.')
+    }
+
     const token = this.tokenStore.loadToken('codex')
     if (!token?.accessToken) {
       throw new Error('OpenAI Codex OAuth token not found. Please authorize via OAuth in settings.')
     }
 
     const meta = this.dynamicModels.get(model)
-    const isReasoning = Boolean(meta?.supportedReasoningLevels && meta.supportedReasoningLevels.length > 0)
-      || model.startsWith('o1') || model.startsWith('o3') || model.startsWith('gpt-5')
+    const supportsReasoning = Boolean(meta?.supportedReasoningLevels && meta.supportedReasoningLevels.length > 0)
 
     const isCustomUrl = Boolean(this.customBaseURL && this.customBaseURL.trim())
     const endpoint = isCustomUrl
@@ -190,7 +190,7 @@ export class CodexAdapter extends LlmAdapter {
         stream: true,
         store: false,
       }
-      if (options.reasoningEffort && options.reasoningEffort !== 'off' && isReasoning) {
+      if (options.reasoningEffort && options.reasoningEffort !== 'off' && supportsReasoning) {
         body.reasoning = { effort: options.reasoningEffort }
       }
     }
