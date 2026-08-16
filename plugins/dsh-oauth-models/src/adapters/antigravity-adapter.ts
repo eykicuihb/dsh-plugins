@@ -51,7 +51,9 @@ export class AntigravityAdapter extends LlmAdapter {
       provider,
       id: model,
       name: model,
-      context: model.includes('1.5-pro') ? 2000000 : 1000000,
+      context: {
+        contextWindow: model.includes('1.5-pro') ? 2000000 : 1000000,
+      },
       defaultMaxTokens: isPro ? 65536 : 8192,
       reasoning: isThinking
         ? {

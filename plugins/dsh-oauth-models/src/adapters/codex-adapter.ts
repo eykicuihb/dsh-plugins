@@ -51,7 +51,9 @@ export class CodexAdapter extends LlmAdapter {
       provider,
       id: model,
       name: model,
-      context: isReasoning ? 200000 : 128000,
+      context: {
+        contextWindow: isReasoning ? 200000 : 128000,
+      },
       defaultMaxTokens: isReasoning ? 65536 : 16384,
       reasoning: isReasoning
         ? {

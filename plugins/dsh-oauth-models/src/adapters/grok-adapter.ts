@@ -48,8 +48,10 @@ export class GrokAdapter extends LlmAdapter {
       provider,
       id: model,
       name: model,
-      context: isGrok3 ? 131072 : 65536,
-      defaultMaxTokens: 32768,
+      context: {
+        contextWindow: isGrok3 ? 131072 : 65536,
+      },
+      defaultMaxTokens: isGrok3 ? 32768 : 8192,
       reasoning: isGrok3
         ? {
             efforts: [
