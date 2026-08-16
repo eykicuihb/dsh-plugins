@@ -1,0 +1,3 @@
+- insert:
+    - id: oauth-models
+      name: '@eykicuihb/dsh-oauth-models'

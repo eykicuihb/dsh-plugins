@@ -5,11 +5,6 @@
   "publishConfig": {
     "access": "public"
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/eykicuihb/dsh-plugins.git",
-    "directory": "plugins/dsh-deepiris"
-  },
   "keywords": [
     "deepseek",
     "deepseek-harness",
@@ -35,6 +30,10 @@
       "types": "./lib/types/index.d.ts",
       "default": "./lib/index.js"
     },
+    "./client": {
+      "types": "./lib/types/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
     "./invariant": {
       "types": "./lib/types/invariant.d.ts",
       "default": "./lib/invariant.js"
@@ -42,9 +41,23 @@
     "./src/*": "./src/*",
     "./package.json": "./package.json"
   },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ],
+      "platform": "web"
+    }
+  },
   "files": [
     "lib",
     "src",
+    "cordis.patch.yml",
     "README.md",
     "README.zh.md",
     "LICENSE"
