@@ -167,6 +167,7 @@ export class CodexAdapter extends LlmAdapter {
     } else {
       // ChatGPT Backend Codex Responses API format
       const input = (options.messages || []).map((m: any) => {
+        const isAssistant = m.role === 'assistant'
         const text = typeof m.content === 'string'
           ? m.content
           : Array.isArray(m.content)
@@ -174,8 +175,8 @@ export class CodexAdapter extends LlmAdapter {
             : String(m.content || '')
         return {
           type: 'message',
-          role: m.role === 'assistant' ? 'assistant' : 'user',
-          content: [{ type: 'input_text', text }],
+          role: isAssistant ? 'assistant' : 'user',
+          content: [{ type: isAssistant ? 'output_text' : 'input_text', text }],
         }
       })
 
