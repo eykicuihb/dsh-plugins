@@ -6,37 +6,22 @@ A curated collection of community plugins, tool extensions, and capabilities for
 
 ---
 
-## Available Plugins
+## 🌟 Available Plugins
 
 | Plugin | Package | Description | Status |
 |---|---|---|---|
-| 👁️ **DeepIris (深瞳)** | [`plugins/dsh-deepiris`](./plugins/dsh-deepiris) | Multi-provider VLM visual understanding, OCR, and autonomous UI testing/inspection for DeepSeek LLMs. | `v0.1.0` (Ready) |
-| 🔑 **OAuth Models & Quota** | [`plugins/dsh-oauth-models`](./plugins/dsh-oauth-models) | OpenAI Codex, Google Antigravity, and xAI Grok OAuth subscriptions bridge with live WebUI Quota Dashboard. | `v0.1.0` (Ready) |
+| 🔑 **OAuth Models & Subscriptions** | [`plugins/dsh-oauth-models`](./plugins/dsh-oauth-models) | OpenAI Codex (ChatGPT Plus/Pro), Google Antigravity (CloudCode PA), and xAI Grok subscriptions bridge with 100% remote dynamic model synchronization, 1-click browser PKCE login, and live WebUI management. | `v0.1.0` (Ready) |
+| 👁️ **DeepIris (深瞳)** | [`plugins/dsh-deepiris`](./plugins/dsh-deepiris) | Multi-provider VLM visual understanding, high-accuracy OCR, and autonomous UI testing/inspection for DeepSeek LLMs. | `v0.1.0` (Ready) |
 
 ---
 
-## Getting Started
+## 🚀 Quick Start Guide
 
-### 1. Installation
+### 1. Enabling Plugins in `cordis.patch.yml`
 
-To install plugins into your DeepSeek Harness environment:
-
-```bash
-# Install DeepIris
-pnpm add @eykicuihb/dsh-deepiris
-
-# Install OAuth Models
-pnpm add @eykicuihb/dsh-oauth-models
-```
-
-### 2. Enabling Plugins in `cordis.patch.yml`
+In your `~/.dsh/cordis.patch.yml` (or project config), declare the plugins:
 
 ```yaml
-- id: deepiris
-  name: '@eykicuihb/dsh-deepiris'
-  config:
-    provider: dashscope
-
 - id: oauth-models
   name: '@eykicuihb/dsh-oauth-models'
   config:
@@ -47,11 +32,29 @@ pnpm add @eykicuihb/dsh-oauth-models
         enabled: true
       grok:
         enabled: true
+
+- id: deepiris
+  name: '@eykicuihb/dsh-deepiris'
+  config:
+    provider: dashscope
 ```
+
+### 2. Launch DeepSeek Harness WebUI
+
+```bash
+pnpm dsh web
+```
+
+### 3. Authorize Your Subscriptions
+
+1. Navigate to **Settings -> OAuth 订阅配额 (OAuth Subscriptions & Quotas)**.
+2. Click **`🔑 OAuth 浏览器登录`** for Google Antigravity, OpenAI Codex, or xAI Grok.
+3. Complete authentication in the official browser window.
+4. Return to chat and select any of the dynamically synchronized models (`gemini-3.6-flash`, `gpt-5.6-sol`, `grok-4.20`, `claude-sonnet-4-6`) to begin chatting with real-time thought chains!
 
 ---
 
-## Contributing
+## 🛠️ Contributing
 
 We welcome community contributions to expand the DeepSeek Harness ecosystem!
 
@@ -62,6 +65,6 @@ We welcome community contributions to expand the DeepSeek Harness ecosystem!
 
 ---
 
-## License
+## 📄 License
 
 MIT License © 2026 eykicuihb

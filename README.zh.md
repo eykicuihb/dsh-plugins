@@ -6,37 +6,22 @@
 
 ---
 
-## 插件列表
+## 🌟 插件列表
 
 | 插件名称 | 目录 / 包名 | 描述 | 状态 |
 |---|---|---|---|
-| 👁️ **DeepIris (深瞳)** | [`plugins/dsh-deepiris`](./plugins/dsh-deepiris) | 为 DeepSeek 提供多 Provider VLM 视觉感知、OCR 识别与自主 UI 闭环质检能力。 | `v0.1.0` (就绪) |
-| 🔑 **OAuth Models & Quota** | [`plugins/dsh-oauth-models`](./plugins/dsh-oauth-models) | OpenAI Codex、Google Antigravity 与 xAI Grok 订阅直连与 WebUI 实时额度监控看板。 | `v0.1.0` (就绪) |
+| 🔑 **OAuth Models & Subscriptions** | [`plugins/dsh-oauth-models`](./plugins/dsh-oauth-models) | OpenAI Codex (ChatGPT Plus/Pro)、Google Antigravity (CloudCode PA) 与 xAI Grok 官方订阅直连插件。支持 100% 远端动态模型同步、一键浏览器 PKCE 登录与 WebUI 配额看板。 | `v0.1.0` (就绪) |
+| 👁️ **DeepIris (深瞳)** | [`plugins/dsh-deepiris`](./plugins/dsh-deepiris) | 为 DeepSeek 提供多 Provider VLM 视觉感知、高精度 OCR 识别与自主 UI 闭环质检能力。 | `v0.1.0` (就绪) |
 
 ---
 
-## 快速上手
+## 🚀 快速上手
 
-### 1. 安装插件
+### 1. 在 `cordis.patch.yml` 中声明挂载插件
 
-在你的 DeepSeek Harness 项目中安装所需插件：
-
-```bash
-# 安装 DeepIris
-pnpm add @eykicuihb/dsh-deepiris
-
-# 安装 OAuth Models & Quota
-pnpm add @eykicuihb/dsh-oauth-models
-```
-
-### 2. 在 `cordis.patch.yml` 中挂载启用
+在 `~/.dsh/cordis.patch.yml` 或你的配置文件中加入：
 
 ```yaml
-- id: deepiris
-  name: '@eykicuihb/dsh-deepiris'
-  config:
-    provider: dashscope
-
 - id: oauth-models
   name: '@eykicuihb/dsh-oauth-models'
   config:
@@ -47,11 +32,29 @@ pnpm add @eykicuihb/dsh-oauth-models
         enabled: true
       grok:
         enabled: true
+
+- id: deepiris
+  name: '@eykicuihb/dsh-deepiris'
+  config:
+    provider: dashscope
 ```
+
+### 2. 启动 DeepSeek Harness WebUI
+
+```bash
+pnpm dsh web
+```
+
+### 3. 进行 OAuth 账号授权
+
+1. 在 WebUI 设置中心打开 **OAuth 订阅配额 (OAuth Subscriptions & Quotas)**；
+2. 在对应厂商卡片点击 **`🔑 OAuth 浏览器登录`**；
+3. 在弹出的浏览器窗口中完成 Google、OpenAI 或 xAI 官方授权；
+4. 授权成功后返回对话界面，即可在模型列表中直接选择动态同步到的最新模型（如 `gemini-3.6-flash`、`gpt-5.6-sol`、`grok-4.20`、`claude-sonnet-4-6` 等）并开始带有思考链的顺畅对话！
 
 ---
 
-## 贡献指南
+## 🛠️ 贡献指南
 
 欢迎社区开发者为 DeepSeek Harness 生态贡献更多实用插件！
 
@@ -62,6 +65,6 @@ pnpm add @eykicuihb/dsh-oauth-models
 
 ---
 
-## 开源协议
+## 📄 开源协议
 
 MIT License © 2026 eykicuihb

@@ -2,34 +2,48 @@
 
 English | [中文](README.zh.md)
 
-**`dsh-oauth-models`** is a Cordis-native plugin for **DeepSeek Harness (`dsh`)** that bridges **OpenAI Codex**, **Google Antigravity (Gemini CloudCode PA)**, and **xAI Grok** OAuth subscriptions into your harness.
+**`dsh-oauth-models`** is a high-performance Cordis-native plugin for **DeepSeek Harness (`dsh`)** that bridges **OpenAI Codex (ChatGPT Plus / Pro)**, **Google Antigravity (Gemini & Claude on CloudCode PA)**, and **xAI Grok (SuperGrok / Premium)** OAuth subscriptions directly into your harness runtime.
 
-It allows you to use your existing subscription accounts (ChatGPT Plus/Team, Google CloudCode Pro, SuperGrok) directly without paying per-token API keys, complete with silent auto-refresh, reasoning token streaming (o1, o3-mini, Gemini 2.5 thinking, Grok-3), and a **Live Quota & Rate Limit Dashboard Tab** in the WebUI.
-
----
-
-## Key Features
-
-- **3 Major OAuth Providers Supported**:
-  - **OpenAI Codex**: `gpt-4o`, `gpt-4o-mini`, `o1`, `o3-mini`, `gpt-4.5-preview`, `codex`
-  - **Google Antigravity**: `gemini-2.5-pro` (Thinking), `gemini-2.5-flash`, `gemini-2.0-flash`, `gemini-exp`
-  - **xAI Grok**: `grok-3` (Reasoning), `grok-3-mini`, `grok-2-vision`, `grok-beta`
-- **Silent Auto-Refresh Token Vault**:
-  - Automatically refreshes `accessToken` using `refreshToken` before expiration.
-  - Zero session interruption.
-- **Reasoning Stream Support**:
-  - Transmits full thought chains (`reasoning-delta`) to the agent and UI.
-- **WebUI Live Quota Dashboard**:
-  - Registers a dedicated **OAuth Subscriptions & Quotas** tab in the WebUI Settings.
-  - Displays remaining requests (e.g. 42/50), sliding window reset timers, TPM/RPM limits, and one-click refresh/re-auth actions.
+It allows you to use your existing subscription accounts seamlessly without per-token API costs, featuring **100% remote dynamic model synchronization**, **one-click browser PKCE authorization**, **real-time reasoning / thought chain streaming (`reasoning-delta`)**, and a **Live Quota & Account Management Dashboard** in the WebUI.
 
 ---
 
-## Installation & Setup
+## 🌟 Key Features
 
-### 1. In `cordis.patch.yml`
+### 1. 🔑 1-Click Interactive PKCE OAuth Login
+- **Built-in Local OAuth Bridge**: Runs a lightweight PKCE server handling official OAuth 2.0 authorization code flows on standard provider callback ports.
+- **One-Click Browser Authorization**: Simply click **`🔑 OAuth 浏览器登录`** in the WebUI Settings tab to open the official Google, OpenAI, or xAI authorization page.
+- **Silent Auto-Refresh Vault**: Token expiration timestamps are continuously monitored and automatically refreshed in the background without session interruption.
 
-Add the plugin to your `~/.dsh/cordis.patch.yml` or project configuration:
+### 2. 🌐 100% Live Remote Model Synchronization (No Hardcoding)
+- **Google Antigravity**: Dynamically queries Google CloudCode PA (`/v1internal:fetchAvailableModels`) upon authentication to populate real available models:
+  - `gemini-3.6-flash-high` / `gemini-3.6-flash-medium` / `gemini-3.6-flash-low`
+  - `gemini-3.1-pro-high` / `gemini-3.1-flash-lite`
+  - `gemini-2.5-pro` (Reasoning & 1M context) / `gemini-2.5-flash`
+  - `claude-sonnet-4-6` (Reasoning) / `claude-opus-4-6-thinking`
+  - `gpt-oss-120b-medium`, `gemini-3-flash`, and more.
+- **xAI Grok**: Dynamically syncs all available models from `https://api.x.ai/v1/models`:
+  - `grok-4.20-0309-reasoning` / `grok-4.20-0309-non-reasoning` / `grok-4.20-multi-agent-0309`
+  - `grok-4.3`, `grok-4.5`, `grok-4.6`, `grok-build-0.1`, etc.
+- **OpenAI Codex**: Dynamically syncs from active Codex OAuth session catalog via ChatGPT Responses API:
+  - `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`
+  - `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `codex-auto-review`.
+
+### 3. 🧠 Deep Thinking & Reasoning Stream Support
+- Conforms 100% to DeepSeek Harness `BlockAssembler` chunk contracts.
+- Transmits raw reasoning / thought deltas (`reasoning-delta`) alongside content deltas (`text-delta`), enabling real-time visual thinking blocks in the UI.
+
+### 4. 📊 Live OAuth Status & Management Dashboard
+- Registers a dedicated **OAuth 订阅配额 (OAuth Subscriptions & Quotas)** tab in WebUI Settings.
+- Clean dark-theme cards indicating exact account email, plan tier, real-time connection status (`CONNECTED` / `UNAUTHORIZED`), manual refresh, and one-click disconnection.
+
+---
+
+## 📦 Installation & Setup
+
+### 1. Enable Plugin in `cordis.patch.yml`
+
+Add the plugin to your `~/.dsh/cordis.patch.yml` (or your project configuration):
 
 ```yaml
 - id: oauth-models
@@ -38,42 +52,50 @@ Add the plugin to your `~/.dsh/cordis.patch.yml` or project configuration:
     providers:
       codex:
         enabled: true
-        defaultModel: o3-mini
       antigravity:
         enabled: true
-        defaultModel: gemini-2.5-pro
       grok:
         enabled: true
-        defaultModel: grok-3
-    quotaPollIntervalMs: 120000
 ```
 
-### 2. Using the Models in `dsh`
-
-Once active, the models are immediately selectable from the WebUI model picker or CLI:
+### 2. Launch DeepSeek Harness WebUI
 
 ```bash
-# Example selecting OpenAI o1 via Codex OAuth
-dsh --provider codex --model o1
+pnpm dsh web
+```
 
-# Example selecting Gemini 2.5 Pro via Antigravity OAuth
-dsh --provider antigravity --model gemini-2.5-pro
+### 3. Complete OAuth Authorization
 
-# Example selecting Grok-3 via Grok OAuth
-dsh --provider grok --model grok-3
+1. Open the WebUI in your browser (`http://localhost:5173` or your configured port).
+2. Go to **Settings (设置)** -> **OAuth 订阅配额 (OAuth Subscriptions & Quotas)**.
+3. Click **`🔑 OAuth 浏览器登录`** on the provider card (OpenAI Codex, Google Antigravity, or xAI Grok).
+4. Authorize in the browser popup window. The credentials will be saved and the model list will automatically refresh.
+
+### 4. Chatting with OAuth Models
+
+Select any dynamically synchronized model from the model switcher in the chat interface or CLI:
+
+```bash
+# Example selecting Google Antigravity model via CLI
+dsh --provider antigravity --model gemini-3.6-flash-high
+
+# Example selecting OpenAI Codex model via CLI
+dsh --provider codex --model gpt-5.6-sol
+
+# Example selecting xAI Grok model via CLI
+dsh --provider grok --model grok-4.20-0309-reasoning
 ```
 
 ---
 
-## WebUI Quota Dashboard
+## 🔒 Credential Security
 
-Navigate to **Settings -> Plugins -> OAuth Subscriptions & Quotas**:
-- View live percentage meters for remaining requests in the active window.
-- Monitor token throughput and rate limits (RPM / TPM).
-- Trigger manual quota refreshes or re-authenticate accounts.
+- Token credentials are encrypted and stored locally in `~/.dsh/oauth/<provider>.json`.
+- OAuth client IDs and endpoints use verified official OpenID discovery standards.
+- No third-party servers or external proxies are involved; all token exchanges and model requests communicate directly between your machine and official provider endpoints.
 
 ---
 
-## License
+## 📄 License
 
 MIT License © 2026 eykicuihb
