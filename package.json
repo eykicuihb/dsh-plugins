@@ -1,0 +1,22 @@
+{
+  "name": "dsh-plugins-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DeepSeek Harness (dsh) Community Plugins & Extensions Collection",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "pnpm -r run build",
+    "test": "pnpm -r run test"
+  },
+  "keywords": [
+    "deepseek",
+    "deepseek-harness",
+    "dsh",
+    "cordis",
+    "plugins",
+    "extensions",
+    "ai-agent"
+  ],
+  "author": "eykicuihb"
+}
