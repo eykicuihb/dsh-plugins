@@ -7,7 +7,7 @@
 import http from 'node:http'
 import crypto from 'node:crypto'
 import { URL, URLSearchParams } from 'node:url'
-import type { OAuthProviderType, OAuthTokenData, ModelQuotaDetail, QuotaWindowDetail } from '../types.ts'
+import type { OAuthProviderType, OAuthTokenData, QuotaWindowDetail } from '../types.ts'
 import type { TokenStore } from './token-store.ts'
 
 interface OAuthConfig {
@@ -143,13 +143,9 @@ export class OAuthServer {
   }
 
   /**
-   * 100% Dynamic Quota from Google Antigravity Remote API
+   * 100% Dynamic Quota from Google Antigravity Remote API (Split into Gemini vs Non-Gemini)
    */
-  private async fetchAntigravityLiveQuota(token: OAuthTokenData): Promise<{
-    modelQuotas: ModelQuotaDetail[]
-    quotaWindows: QuotaWindowDetail[]
-  }> {
-    const modelQuotas: ModelQuotaDetail[] = []
+  private async fetchAntigravityLiveQuota(token: OAuthTokenData): Promise<QuotaWindowDetail[]> {
     const quotaWindows: QuotaWindowDetail[] = []
 
     try {
@@ -166,60 +162,47 @@ export class OAuthServer {
 
       if (res.ok) {
         const data = (await res.json()) as { models?: Record<string, any> }
-        let fiveHourPercent = 100
-        let fiveHourReset: string | undefined
-        let weeklyPercent = 100
-        let weeklyReset: string | undefined
+        let geminiPercent = 100
+        let geminiReset: string | undefined
+        let nonGeminiPercent = 100
+        let nonGeminiReset: string | undefined
 
         for (const [id, meta] of Object.entries(data.models || {})) {
           if (id.startsWith('chat_') || id.startsWith('tab_')) continue
           const q = meta.quotaInfo || meta.quota
-          if (q) {
-            const cleanName = (meta.displayName || id).replace(/\s*\((Low|Medium|High|Thinking)\)/gi, '').trim()
-            const pct = Math.round((q.remainingFraction ?? 1) * 1000) / 10
-            modelQuotas.push({
-              modelId: id,
-              name: cleanName,
-              remainingPercentage: pct,
-              resetTime: q.resetTime,
-            })
-
-            if (id.includes('flash') || id.includes('pro')) {
-              fiveHourPercent = Math.min(fiveHourPercent, pct)
-              if (q.resetTime && !fiveHourReset) fiveHourReset = q.resetTime
-            }
-            if (id.includes('claude')) {
-              weeklyPercent = Math.min(weeklyPercent, pct)
-              if (q.resetTime && !weeklyReset) weeklyReset = q.resetTime
+          if (q && typeof q.remainingFraction === 'number') {
+            const pct = Math.round(q.remainingFraction * 1000) / 10
+            if (id.toLowerCase().includes('gemini')) {
+              geminiPercent = Math.min(geminiPercent, pct)
+              if (q.resetTime && !geminiReset) geminiReset = q.resetTime
+            } else {
+              nonGeminiPercent = Math.min(nonGeminiPercent, pct)
+              if (q.resetTime && !nonGeminiReset) nonGeminiReset = q.resetTime
             }
           }
         }
 
-        // 1. 5-Hour Rolling Limit
-        if (fiveHourReset || modelQuotas.length > 0) {
-          quotaWindows.push({
-            id: 'antigravity-5h',
-            label: '5小时周期限额',
-            remainingPercentage: fiveHourPercent,
-            resetTimeFormatted: fiveHourReset ? formatChineseDate(fiveHourReset) : undefined,
-          })
-        }
+        // 1. Gemini Models Quota
+        quotaWindows.push({
+          id: 'antigravity-gemini',
+          label: 'Gemini 系列模型配额',
+          remainingPercentage: geminiPercent,
+          resetTimeFormatted: geminiReset ? formatChineseDate(geminiReset) : undefined,
+        })
 
-        // 2. Weekly Limit
-        if (weeklyReset || modelQuotas.length > 0) {
-          quotaWindows.push({
-            id: 'antigravity-weekly',
-            label: '每周使用限额',
-            remainingPercentage: weeklyPercent,
-            resetTimeFormatted: weeklyReset ? formatChineseDate(weeklyReset) : undefined,
-          })
-        }
+        // 2. Non-Gemini / Claude Models Quota
+        quotaWindows.push({
+          id: 'antigravity-nongemini',
+          label: 'Claude / 非 Gemini 模型配额',
+          remainingPercentage: nonGeminiPercent,
+          resetTimeFormatted: nonGeminiReset ? formatChineseDate(nonGeminiReset) : undefined,
+        })
       }
     } catch {
       // Ignore network error
     }
 
-    return { modelQuotas, quotaWindows }
+    return quotaWindows
   }
 
   /**
@@ -345,10 +328,10 @@ export class OAuthServer {
       const isGrokConnected = Boolean(grokToken?.accessToken && (grokToken?.expiresAt ? grokToken.expiresAt > Date.now() : true))
 
       // 100% Dynamic Quota fetching concurrently for all active providers
-      const [antigravityLive, grokWindows, codexLive] = await Promise.all([
+      const [antigravityWindows, grokWindows, codexLive] = await Promise.all([
         isAntigravityConnected && antigravityToken
           ? this.fetchAntigravityLiveQuota(antigravityToken)
-          : Promise.resolve({ modelQuotas: [], quotaWindows: [] }),
+          : Promise.resolve([]),
         isGrokConnected && grokToken
           ? this.fetchGrokLiveQuota(grokToken)
           : Promise.resolve([]),
@@ -371,8 +354,7 @@ export class OAuthServer {
           email: isAntigravityConnected ? (antigravityToken?.accountEmail || 'Google User') : undefined,
           plan: isAntigravityConnected ? (antigravityToken?.subscriptionTier || 'Google CloudCode PA') : undefined,
           expiresAt: antigravityToken?.expiresAt,
-          quotaWindows: isAntigravityConnected && antigravityLive.quotaWindows.length > 0 ? antigravityLive.quotaWindows : undefined,
-          modelQuotas: antigravityLive.modelQuotas.length > 0 ? antigravityLive.modelQuotas : undefined,
+          quotaWindows: isAntigravityConnected && antigravityWindows.length > 0 ? antigravityWindows : undefined,
         },
         grok: {
           connected: isGrokConnected,

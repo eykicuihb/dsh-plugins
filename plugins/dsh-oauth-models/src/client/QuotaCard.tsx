@@ -104,7 +104,7 @@ export function QuotaCard({
             )}
           </div>
 
-          {/* 通用使用限额 (General Usage Windows - Weekly / 5-Hour Limit) */}
+          {/* 通用使用限额 (General Usage Windows) */}
           {metrics.quotaWindows && metrics.quotaWindows.length > 0 && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               <span style={{ fontSize: '0.85rem', fontWeight: 600, color: '#f1f5f9' }}>
@@ -160,66 +160,6 @@ export function QuotaCard({
                         <span style={{ fontSize: '0.82rem', fontWeight: 600, color: '#f1f5f9', minWidth: '55px', textAlign: 'right' }}>
                           剩余 {pct}%
                         </span>
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* Model Specific Live Quota Breakdown */}
-          {metrics.modelQuotas && metrics.modelQuotas.length > 0 && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <span style={{ fontSize: '0.82rem', fontWeight: 600, color: '#cbd5e1' }}>
-                模型分项实时余量:
-              </span>
-              <div
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '6px',
-                  maxHeight: '140px',
-                  overflowY: 'auto',
-                  paddingRight: '4px',
-                }}
-              >
-                {metrics.modelQuotas.map((mq) => {
-                  const pct = Math.max(0, Math.min(100, mq.remainingPercentage))
-                  const barColor = pct > 50 ? '#10b981' : pct > 20 ? '#f59e0b' : '#ef4444'
-                  return (
-                    <div
-                      key={mq.modelId}
-                      style={{
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: '3px',
-                        padding: '6px 8px',
-                        borderRadius: '6px',
-                        backgroundColor: '#13161f',
-                      }}
-                    >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.78rem' }}>
-                        <span style={{ color: '#e2e8f0', fontWeight: 500 }}>{mq.name}</span>
-                        <span style={{ color: barColor, fontWeight: 600 }}>{pct}% 余量</span>
-                      </div>
-                      <div
-                        style={{
-                          width: '100%',
-                          height: '4px',
-                          borderRadius: '2px',
-                          backgroundColor: 'rgba(255, 255, 255, 0.1)',
-                          overflow: 'hidden',
-                        }}
-                      >
-                        <div
-                          style={{
-                            width: `${pct}%`,
-                            height: '100%',
-                            backgroundColor: barColor,
-                            transition: 'width 0.3s ease',
-                          }}
-                        />
                       </div>
                     </div>
                   )
@@ -290,7 +230,7 @@ export function QuotaCard({
               未连接 OAuth 账号
             </span>
             <span style={{ fontSize: '0.78rem', color: '#94a3b8' }}>
-              登录后即可零 API 费用直连订阅模型并实时查看周限额与思考链
+              登录后即可零 API 费用直连订阅模型并实时查看配额与思考链
             </span>
           </div>
           <button
