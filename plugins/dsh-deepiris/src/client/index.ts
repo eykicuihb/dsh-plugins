@@ -12,10 +12,7 @@ export function apply(ctx: ClientContext): void {
 
   if (ctx.locale?.register) {
     ctx.effect(
-      () => {
-        ctx.locale.register(DEEPIRIS_NS, { en: deepirisLocaleEn, zh: deepirisLocaleZh })
-        ctx.locale.register('settings.plugins', { en: deepirisLocaleEn, zh: deepirisLocaleZh })
-      },
+      () => ctx.locale.register(DEEPIRIS_NS, { en: deepirisLocaleEn, zh: deepirisLocaleZh }),
       'dsh-deepiris: locales',
     )
   }
