@@ -4,7 +4,9 @@ import { DeepIrisCard } from './DeepIrisCard.tsx'
 import { DEEPIRIS_NS, DeepIrisCardController } from './deepiris-card-controller.ts'
 import { deepirisLocaleEn, deepirisLocaleZh } from './locales.ts'
 
-export default function apply(ctx: ClientContext): void {
+export const inject = ['slots', 'locale', 'connection', 'remote', 'settingsScope']
+
+export function apply(ctx: ClientContext): void {
   ctx.locale.define(DEEPIRIS_NS, 'en', deepirisLocaleEn)
   ctx.locale.define(DEEPIRIS_NS, 'zh', deepirisLocaleZh)
 
@@ -36,3 +38,5 @@ export default function apply(ctx: ClientContext): void {
     }, DeepIrisCard)
   })
 }
+
+export default apply

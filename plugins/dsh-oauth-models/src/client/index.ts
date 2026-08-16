@@ -42,3 +42,5 @@ export function apply(ctx: any): void {
     )
   }
 }
+
+export default apply
