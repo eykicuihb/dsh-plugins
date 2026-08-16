@@ -1,9 +1,10 @@
 /**
  * Google Antigravity (Gemini) OAuth Adapter
- * Connects to Google Gemini models using CloudCode / Antigravity OAuth tokens or API keys.
- * 100% dynamically synchronizes model list from remote Google Gemini API endpoint.
+ * Connects to Google Cloud Code Assist / Antigravity OAuth API.
+ * 100% dynamically synchronizes model list from remote Google Antigravity PA endpoint.
  */
 
+import crypto from 'node:crypto'
 import { LlmAdapter } from '@deepseek-ai/dsh-llm'
 import type {
   GenerateOptions,
@@ -15,20 +16,21 @@ import type {
 import type { TokenStore } from '../auth/token-store.ts'
 import type { QuotaService } from '../quota/quota-service.ts'
 
-interface DynamicGeminiModelMeta {
-  name: string
+interface DynamicAntigravityModelMeta {
+  id: string
   displayName?: string
   description?: string
   inputTokenLimit?: number
   outputTokenLimit?: number
-  supportedGenerationMethods?: string[]
+  supportsThinking?: boolean
+  supportsImages?: boolean
 }
 
 export class AntigravityAdapter extends LlmAdapter {
   private readonly tokenStore: TokenStore
   private readonly quotaService?: QuotaService
   private readonly customBaseURL?: string
-  private readonly dynamicModels = new Map<string, DynamicGeminiModelMeta>()
+  private readonly dynamicModels = new Map<string, DynamicAntigravityModelMeta>()
 
   constructor(tokenStore: TokenStore, quotaService?: QuotaService, customBaseURL?: string) {
     super()
@@ -41,77 +43,83 @@ export class AntigravityAdapter extends LlmAdapter {
     return {
       id: 'antigravity',
       name: 'Google Antigravity (OAuth)',
-      description: 'Google Gemini models dynamically synchronized via Antigravity OAuth',
+      description: 'Google Gemini & Claude models dynamically synchronized via Antigravity OAuth',
     }
   }
 
   public override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
     this.dynamicModels.clear()
 
-    try {
-      const token = this.tokenStore.loadToken('antigravity')
-      const baseURL = (this.customBaseURL && this.customBaseURL.trim()) || 'https://generativelanguage.googleapis.com/v1beta'
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), 4000)
-
-      const url = token?.accessToken
-        ? `${baseURL.replace(/\/+$/, '')}/models?key=${token.accessToken}`
-        : `${baseURL.replace(/\/+$/, '')}/models`
-
-      const headers: Record<string, string> = {}
-      if (token?.accessToken && !url.includes('key=')) {
-        headers['Authorization'] = `Bearer ${token.accessToken}`
-      }
-
-      const res = await fetch(url, {
-        headers,
-        signal: controller.signal,
-      })
-      clearTimeout(timer)
-
-      if (res.ok) {
-        const data = (await res.json()) as { models?: DynamicGeminiModelMeta[] }
-        const list = data?.models || []
-        for (const item of list) {
-          const id = item.name.replace(/^models\//, '')
-          if (
-            item.supportedGenerationMethods?.includes('generateContent')
-            || id.startsWith('gemini')
-          ) {
-            this.dynamicModels.set(id, item)
-          }
-        }
-      }
-    } catch {
-      // Ignore network errors
+    const token = this.tokenStore.loadToken('antigravity')
+    if (!token?.accessToken) {
+      return []
     }
 
-    return Array.from(this.dynamicModels.values()).map(m => {
-      const id = m.name.replace(/^models\//, '')
-      return {
-        provider,
-        id,
-        name: m.displayName || id,
-        description: m.description || `Google ${id}`,
+    const endpoints = [
+      (this.customBaseURL && this.customBaseURL.trim()) || 'https://cloudcode-pa.googleapis.com',
+      'https://daily-cloudcode-pa.googleapis.com',
+    ]
+
+    for (const base of endpoints) {
+      try {
+        const controller = new AbortController()
+        const timer = setTimeout(() => controller.abort(), 4000)
+
+        const res = await fetch(`${base.replace(/\/+$/, '')}/v1internal:fetchAvailableModels`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token.accessToken}`,
+            'User-Agent': 'antigravity/1.0.0',
+          },
+          body: JSON.stringify({ project: token.accountId || '' }),
+          signal: controller.signal,
+        })
+        clearTimeout(timer)
+
+        if (res.ok) {
+          const data = (await res.json()) as { models?: Record<string, any> }
+          const modelsMap = data?.models || {}
+          for (const [modelId, meta] of Object.entries(modelsMap)) {
+            this.dynamicModels.set(modelId, {
+              id: modelId,
+              displayName: meta.displayName || modelId,
+              description: meta.description || `Google Antigravity ${meta.displayName || modelId}`,
+              inputTokenLimit: meta.maxTokens || 1048576,
+              outputTokenLimit: meta.maxOutputTokens || 65535,
+              supportsThinking: Boolean(meta.supportsThinking),
+              supportsImages: Boolean(meta.supportsImages),
+            })
+          }
+          if (this.dynamicModels.size > 0) break
+        }
+      } catch {
+        // Try fallback endpoint
       }
-    })
+    }
+
+    return Array.from(this.dynamicModels.values()).map(m => ({
+      provider,
+      id: m.id,
+      name: m.displayName || m.id,
+      description: m.description || `Antigravity ${m.displayName || m.id}`,
+    }))
   }
 
   public override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
     const meta = this.dynamicModels.get(model)
-    const isThinking = model.includes('thinking') || model.includes('thought')
-
-    const contextWindow = meta?.inputTokenLimit || (model.includes('1.5-pro') ? 2000000 : 1000000)
-    const maxTokens = meta?.outputTokenLimit || (model.includes('flash') && !isThinking ? 8192 : 65536)
+    const isThinking = meta?.supportsThinking || model.includes('thinking') || model.includes('pro')
+    const contextWindow = meta?.inputTokenLimit || 1048576
+    const maxTokens = meta?.outputTokenLimit || 65535
 
     return Promise.resolve({
       provider,
       id: model,
       name: meta?.displayName || model,
       context: {
-        contextWindow: Number.isInteger(contextWindow) && contextWindow > 0 ? contextWindow : 1000000,
+        contextWindow: Number.isInteger(contextWindow) && contextWindow > 0 ? contextWindow : 1048576,
       },
-      defaultMaxTokens: Number.isInteger(maxTokens) && maxTokens > 0 ? maxTokens : 8192,
+      defaultMaxTokens: Number.isInteger(maxTokens) && maxTokens > 0 ? maxTokens : 65535,
       reasoning: isThinking
         ? {
             efforts: [
@@ -125,44 +133,51 @@ export class AntigravityAdapter extends LlmAdapter {
     })
   }
 
-  public override async *stream(
-    _provider: string,
-    model: string,
-    options: GenerateOptions,
-  ): AsyncIterableIterator<StreamChunk> {
+  public override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    const model = options.model
     const token = this.tokenStore.loadToken('antigravity')
     if (!token?.accessToken) {
-      throw new Error('Google Antigravity OAuth token not found or expired. Please authorize via OAuth first.')
+      throw new Error('Google Antigravity OAuth token not found. Please authorize via OAuth in settings.')
     }
 
-    const baseURL = (this.customBaseURL && this.customBaseURL.trim()) || 'https://generativelanguage.googleapis.com/v1beta'
-    const endpoint = `${baseURL.replace(/\/+$/, '')}/models/${model}:streamGenerateContent?alt=sse&key=${token.accessToken}`
+    const base = (this.customBaseURL && this.customBaseURL.trim()) || 'https://cloudcode-pa.googleapis.com'
+    const endpoint = `${base.replace(/\/+$/, '')}/v1internal:streamGenerateContent?alt=sse`
 
-    const contents = options.messages.map((m) => {
+    const contents = (options.messages || []).map((m: any) => {
       const role = m.role === 'assistant' ? 'model' : 'user'
       if (typeof m.content === 'string') {
         return { role, parts: [{ text: m.content }] }
       }
-      const parts = (m.content || []).map((p: any) => {
-        if (p.type === 'text') return { text: p.text }
-        if (p.type === 'image' && p.image) {
-          return {
-            inline_data: {
-              mime_type: p.image.mediaType,
-              data: p.image.data,
-            },
+      if (Array.isArray(m.content)) {
+        const parts = m.content.map((p: any) => {
+          if (p.type === 'text') return { text: p.text }
+          if (p.type === 'image' && p.image) {
+            return {
+              inline_data: {
+                mime_type: p.image.mediaType,
+                data: p.image.data,
+              },
+            }
           }
-        }
-        return p
-      })
-      return { role, parts }
+          return { text: String(p.text || '') }
+        })
+        return { role, parts }
+      }
+      return { role, parts: [{ text: String(m.content || '') }] }
     })
 
-    const body: Record<string, any> = {
-      contents,
-      generationConfig: {
-        temperature: options.temperature ?? 0.7,
-        maxOutputTokens: options.maxTokens,
+    const body = {
+      project: token.accountId || '',
+      model,
+      userAgent: 'antigravity',
+      requestType: 'agent',
+      requestId: `agent-${crypto.randomUUID()}`,
+      request: {
+        contents,
+        generationConfig: {
+          temperature: options.temperature ?? 0.7,
+          maxOutputTokens: options.maxTokens,
+        },
       },
     }
 
@@ -170,8 +185,11 @@ export class AntigravityAdapter extends LlmAdapter {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token.accessToken}`,
+        'User-Agent': 'antigravity/1.0.0',
       },
       body: JSON.stringify(body),
+      signal: options.signal,
     })
 
     if (!response.ok) {
@@ -204,7 +222,7 @@ export class AntigravityAdapter extends LlmAdapter {
             const dataStr = trimmed.slice(6)
             try {
               const parsed = JSON.parse(dataStr)
-              const candidate = parsed.candidates?.[0]
+              const candidate = parsed.response?.candidates?.[0] || parsed.candidates?.[0]
               if (!candidate) continue
 
               const parts = candidate.content?.parts || []

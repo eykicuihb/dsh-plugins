@@ -1,7 +1,7 @@
 /**
  * xAI Grok OAuth Adapter
- * Connects to xAI Grok models using Grok OAuth token or subscription endpoint.
- * 100% dynamically synchronizes model list from remote xAI /v1/models endpoint.
+ * Connects to xAI Grok models using Grok OAuth token.
+ * 100% dynamically synchronizes model list from remote xAI models endpoint.
  */
 
 import { LlmAdapter } from '@deepseek-ai/dsh-llm'
@@ -17,8 +17,10 @@ import type { QuotaService } from '../quota/quota-service.ts'
 
 interface DynamicGrokModelMeta {
   id: string
-  created?: number
-  owned_by?: string
+  name?: string
+  description?: string
+  contextWindow?: number
+  maxTokens?: number
 }
 
 export class GrokAdapter extends LlmAdapter {
@@ -38,61 +40,72 @@ export class GrokAdapter extends LlmAdapter {
     return {
       id: 'grok',
       name: 'xAI Grok (OAuth)',
-      description: 'xAI Grok models dynamically synchronized via SuperGrok / xAI OAuth',
+      description: 'xAI Grok models dynamically synchronized via Grok OAuth API',
     }
   }
 
   public override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
     this.dynamicModels.clear()
 
+    const token = this.tokenStore.loadToken('grok')
+    if (!token?.accessToken) {
+      return []
+    }
+
     try {
-      const token = this.tokenStore.loadToken('grok')
       const baseURL = (this.customBaseURL && this.customBaseURL.trim()) || 'https://api.x.ai/v1'
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), 4000)
 
-      const headers: Record<string, string> = {}
-      if (token?.accessToken) {
-        headers['Authorization'] = `Bearer ${token.accessToken}`
-      }
-
       const res = await fetch(`${baseURL.replace(/\/+$/, '')}/models`, {
-        headers,
+        headers: {
+          'Authorization': `Bearer ${token.accessToken}`,
+        },
         signal: controller.signal,
       })
       clearTimeout(timer)
 
       if (res.ok) {
-        const data = (await res.json()) as { data?: DynamicGrokModelMeta[] }
-        const list = data?.data || []
-        for (const item of list) {
-          if (item?.id) {
-            this.dynamicModels.set(item.id, item)
+        const data = (await res.json()) as { data?: Array<{ id: string; created?: number }> }
+        for (const item of data?.data || []) {
+          const id = item.id
+          if (!id.includes('embedding') && !id.includes('moderation')) {
+            this.dynamicModels.set(id, {
+              id,
+              name: id,
+              description: `xAI ${id} (Live Remote Synced)`,
+              contextWindow: 131072,
+              maxTokens: 65536,
+            })
           }
         }
       }
     } catch {
-      // Ignore network errors
+      // Ignore network error
     }
 
     return Array.from(this.dynamicModels.values()).map(m => ({
       provider,
       id: m.id,
-      name: m.id,
-      description: `xAI ${m.id} model (Remote Synced)`,
+      name: m.name || m.id,
+      description: m.description || `xAI ${m.id}`,
     }))
   }
 
   public override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
-    const isReasoning = model.includes('thinking') || model.includes('reasoning') || model.includes('grok-3')
+    const meta = this.dynamicModels.get(model)
+    const isReasoning = model.includes('reasoning') || model.includes('grok-3') || model.includes('grok-4') || model.includes('deepsearch')
+    const contextWindow = meta?.contextWindow || 131072
+    const maxTokens = meta?.maxTokens || 65536
+
     return Promise.resolve({
       provider,
       id: model,
-      name: model,
+      name: meta?.name || model,
       context: {
-        contextWindow: 131072,
+        contextWindow: Number.isInteger(contextWindow) && contextWindow > 0 ? contextWindow : 131072,
       },
-      defaultMaxTokens: isReasoning ? 32768 : 8192,
+      defaultMaxTokens: Number.isInteger(maxTokens) && maxTokens > 0 ? maxTokens : 65536,
       reasoning: isReasoning
         ? {
             efforts: [
@@ -106,34 +119,28 @@ export class GrokAdapter extends LlmAdapter {
     })
   }
 
-  public override async *stream(
-    _provider: string,
-    model: string,
-    options: GenerateOptions,
-  ): AsyncIterableIterator<StreamChunk> {
+  public override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    const model = options.model
     const token = this.tokenStore.loadToken('grok')
     if (!token?.accessToken) {
-      throw new Error('xAI Grok OAuth token not found or expired. Please authorize via OAuth first.')
+      throw new Error('xAI Grok OAuth token not found. Please authorize via OAuth in settings.')
     }
 
     const baseURL = (this.customBaseURL && this.customBaseURL.trim()) || 'https://api.x.ai/v1'
     const endpoint = `${baseURL.replace(/\/+$/, '')}/chat/completions`
 
-    const messages = options.messages.map((m) => {
+    const messages = (options.messages || []).map((m: any) => {
       if (typeof m.content === 'string') {
         return { role: m.role, content: m.content }
       }
-      const parts = (m.content || []).map((p: any) => {
-        if (p.type === 'text') return { type: 'text', text: p.text }
-        if (p.type === 'image' && p.image) {
-          return {
-            type: 'image_url',
-            image_url: { url: `data:${p.image.mediaType};base64,${p.image.data}` },
-          }
-        }
-        return p
-      })
-      return { role: m.role, content: parts }
+      if (Array.isArray(m.content)) {
+        const textParts = m.content
+          .filter((p: any) => p.type === 'text')
+          .map((p: any) => p.text)
+          .join('\n')
+        return { role: m.role, content: textParts }
+      }
+      return { role: m.role, content: String(m.content || '') }
     })
 
     const body: Record<string, any> = {
@@ -144,7 +151,7 @@ export class GrokAdapter extends LlmAdapter {
       max_tokens: options.maxTokens,
     }
 
-    if (options.reasoningEffort && model.startsWith('grok-3')) {
+    if (options.reasoningEffort) {
       body.reasoning_effort = options.reasoningEffort
     }
 
@@ -155,6 +162,7 @@ export class GrokAdapter extends LlmAdapter {
         'Authorization': `Bearer ${token.accessToken}`,
       },
       body: JSON.stringify(body),
+      signal: options.signal,
     })
 
     if (!response.ok) {
@@ -163,7 +171,7 @@ export class GrokAdapter extends LlmAdapter {
     }
 
     if (!response.body) {
-      throw new Error('No response body received from Grok API.')
+      throw new Error('No response body received from xAI API.')
     }
 
     const reader = response.body.getReader()

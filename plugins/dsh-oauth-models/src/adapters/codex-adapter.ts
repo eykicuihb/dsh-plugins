@@ -1,6 +1,6 @@
 /**
  * OpenAI Codex OAuth Adapter
- * Connects to OpenAI models using Codex OAuth token or direct subscription endpoint.
+ * Connects to OpenAI models using Codex OAuth token.
  * 100% dynamically synchronizes model list from active OAuth remote session.
  */
 
@@ -18,7 +18,7 @@ import type {
 import type { TokenStore } from '../auth/token-store.ts'
 import type { QuotaService } from '../quota/quota-service.ts'
 
-interface DynamicModelMeta {
+interface DynamicCodexModelMeta {
   id: string
   name: string
   description?: string
@@ -32,7 +32,7 @@ export class CodexAdapter extends LlmAdapter {
   private readonly tokenStore: TokenStore
   private readonly quotaService?: QuotaService
   private readonly customBaseURL?: string
-  private readonly dynamicModels = new Map<string, DynamicModelMeta>()
+  private readonly dynamicModels = new Map<string, DynamicCodexModelMeta>()
 
   constructor(tokenStore: TokenStore, quotaService?: QuotaService, customBaseURL?: string) {
     super()
@@ -52,7 +52,12 @@ export class CodexAdapter extends LlmAdapter {
   public override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
     this.dynamicModels.clear()
 
-    // 1. Synchronize from active Codex OAuth session cache
+    const token = this.tokenStore.loadToken('codex')
+    if (!token?.accessToken) {
+      return []
+    }
+
+    // 1. Synchronize dynamically from active Codex OAuth session cache
     const sessionCachePaths = [
       path.join(os.homedir(), '.codex', 'models_cache.json'),
       path.join(os.homedir(), '.codex', 'cc-switch-model-catalog.json'),
@@ -87,34 +92,31 @@ export class CodexAdapter extends LlmAdapter {
 
     // 2. Synchronize dynamically from remote endpoint if available
     try {
-      const token = this.tokenStore.loadToken('codex')
-      if (token?.accessToken) {
-        const baseURL = (this.customBaseURL && this.customBaseURL.trim()) || 'https://api.openai.com/v1'
-        const controller = new AbortController()
-        const timer = setTimeout(() => controller.abort(), 4000)
-        const res = await fetch(`${baseURL.replace(/\/+$/, '')}/models`, {
-          headers: { Authorization: `Bearer ${token.accessToken}` },
-          signal: controller.signal,
-        })
-        clearTimeout(timer)
+      const baseURL = (this.customBaseURL && this.customBaseURL.trim()) || 'https://api.openai.com/v1'
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 4000)
+      const res = await fetch(`${baseURL.replace(/\/+$/, '')}/models`, {
+        headers: { Authorization: `Bearer ${token.accessToken}` },
+        signal: controller.signal,
+      })
+      clearTimeout(timer)
 
-        if (res.ok) {
-          const data = (await res.json()) as { data?: Array<{ id: string }> }
-          for (const item of data?.data || []) {
-            const id = item.id
-            if (
-              !id.includes('realtime') && !id.includes('audio') &&
-              !id.includes('transcription') && !id.includes('embedding') && !id.includes('tts')
-            ) {
-              if (!this.dynamicModels.has(id)) {
-                this.dynamicModels.set(id, {
-                  id,
-                  name: id,
-                  description: `OpenAI ${id} (Remote Synced)`,
-                  contextWindow: 128000,
-                  defaultMaxTokens: 16384,
-                })
-              }
+      if (res.ok) {
+        const data = (await res.json()) as { data?: Array<{ id: string }> }
+        for (const item of data?.data || []) {
+          const id = item.id
+          if (
+            !id.includes('realtime') && !id.includes('audio') &&
+            !id.includes('transcription') && !id.includes('embedding') && !id.includes('tts')
+          ) {
+            if (!this.dynamicModels.has(id)) {
+              this.dynamicModels.set(id, {
+                id,
+                name: id,
+                description: `OpenAI ${id} (Remote Synced)`,
+                contextWindow: 128000,
+                defaultMaxTokens: 16384,
+              })
             }
           }
         }
@@ -163,14 +165,11 @@ export class CodexAdapter extends LlmAdapter {
     })
   }
 
-  public override async *stream(
-    _provider: string,
-    model: string,
-    options: GenerateOptions,
-  ): AsyncIterableIterator<StreamChunk> {
+  public override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    const model = options.model
     const token = this.tokenStore.loadToken('codex')
     if (!token?.accessToken) {
-      throw new Error('Codex OAuth token not found or expired. Please authorize via OAuth first.')
+      throw new Error('OpenAI Codex OAuth token not found. Please authorize via OAuth in settings.')
     }
 
     const baseURL = (this.customBaseURL && this.customBaseURL.trim()) || 'https://api.openai.com/v1'
@@ -180,21 +179,18 @@ export class CodexAdapter extends LlmAdapter {
     const isReasoning = Boolean(meta?.supportedReasoningLevels && meta.supportedReasoningLevels.length > 0)
       || model.startsWith('o1') || model.startsWith('o3') || model.startsWith('gpt-5')
 
-    const messages = options.messages.map((m) => {
+    const messages = (options.messages || []).map((m: any) => {
       if (typeof m.content === 'string') {
         return { role: m.role, content: m.content }
       }
-      const parts = (m.content || []).map((p: any) => {
-        if (p.type === 'text') return { type: 'text', text: p.text }
-        if (p.type === 'image' && p.image) {
-          return {
-            type: 'image_url',
-            image_url: { url: `data:${p.image.mediaType};base64,${p.image.data}` },
-          }
-        }
-        return p
-      })
-      return { role: m.role, content: parts }
+      if (Array.isArray(m.content)) {
+        const textParts = m.content
+          .filter((p: any) => p.type === 'text')
+          .map((p: any) => p.text)
+          .join('\n')
+        return { role: m.role, content: textParts }
+      }
+      return { role: m.role, content: String(m.content || '') }
     })
 
     const body: Record<string, any> = {
@@ -215,13 +211,19 @@ export class CodexAdapter extends LlmAdapter {
       if (options.maxTokens) body.max_tokens = options.maxTokens
     }
 
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token.accessToken}`,
+    }
+    if (token.accountId) {
+      headers['ChatGPT-Account-ID'] = token.accountId
+    }
+
     const response = await fetch(endpoint, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token.accessToken}`,
-      },
+      headers,
       body: JSON.stringify(body),
+      signal: options.signal,
     })
 
     if (!response.ok) {
@@ -266,7 +268,7 @@ export class CodexAdapter extends LlmAdapter {
                 yield { type: 'reasoning', text: delta.reasoning_content }
               }
             } catch {
-              // Ignore parse error on partial chunks
+              // Ignore partial JSON parse errors
             }
           }
         }
