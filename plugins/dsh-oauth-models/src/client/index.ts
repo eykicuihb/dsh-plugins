@@ -13,6 +13,7 @@ export { QuotaCard } from './QuotaCard.tsx'
 export { QuotaController } from './quota-controller.ts'
 export { en, zh } from './locales.ts'
 
+export const name = 'oauth-quota'
 export const inject = ['slots', 'locale']
 
 export function apply(ctx: any): void {
@@ -34,13 +35,23 @@ export function apply(ctx: any): void {
           name: 'settings.plugins.tab',
           id: 'oauth-quota',
           order: 25,
-          label: () => (ctx.locale?.get() === 'en' ? en.tabTitle : zh.tabTitle),
+          label: () => (ctx.locale?.getLocale?.()?.active === 'en' ? en.tabTitle : zh.tabTitle),
           locale: 'settings.plugins.oauth',
         },
-        () => React.createElement(OAuthQuotaTab, { controller, locale: ctx.locale?.get() || 'zh' }),
+        () => React.createElement(OAuthQuotaTab, {
+          controller,
+          locale: ctx.locale?.getLocale?.()?.active || 'zh',
+        }),
       ),
     )
   }
 }
 
-export default apply
+apply.inject = inject
+apply.name = name
+
+export default {
+  name,
+  inject,
+  apply,
+}

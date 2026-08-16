@@ -6,7 +6,7 @@
  */
 
 import type { IApiClient } from '@deepseek-ai/dsh-client-connection/client'
-import type { SettingsScope, SettingsScopeSnapshot, SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
+import type { SettingsScope, SettingsScopeSnapshot, SnapshotStore } from './card-form.ts'
 import {
   CardForm, numberField, textField,
   type CardActions, type CardFieldState, type CardShell,

@@ -13,8 +13,51 @@
  * override equal to the composition default is still an override.
  */
 
-import type { SettingsScope, SettingsScopeSnapshot } from '@deepseek-ai/dsh-client-runtime/client'
-import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
+export interface ObservableSnapshot<T> {
+  getSnapshot(): T
+  subscribe(fn: () => void): () => void
+}
+
+export interface SnapshotStore<T> extends ObservableSnapshot<T> {
+  update(mutator: (draft: T) => void): void
+  set(next: T): void
+}
+
+export function createSnapshotStore<T>(initial: T): SnapshotStore<T> {
+  let state = initial
+  const listeners = new Set<() => void>()
+  return {
+    getSnapshot: () => state,
+    subscribe: (fn: () => void) => {
+      listeners.add(fn)
+      return () => { listeners.delete(fn) }
+    },
+    set: (next: T) => {
+      state = next
+      for (const fn of listeners) fn()
+    },
+    update: (mutator: (draft: T) => void) => {
+      mutator(state)
+      state = { ...state }
+      for (const fn of listeners) fn()
+    },
+  }
+}
+
+export interface SettingsScopeSnapshot<T> {
+  value?: T
+  user?: Partial<T>
+}
+
+export interface SettingsScope<T> {
+  getSnapshot(): SettingsScopeSnapshot<T>
+  subscribe(fn: () => void): () => void
+  hasDraft(): boolean
+  edit(field: string, value: unknown): void
+  clear(field: string): void
+  save(): Promise<{ ok: boolean }>
+  discard(): void
+}
 
 /** The write one field's staged text performs when the card is saved. */
 export type FieldWrite =

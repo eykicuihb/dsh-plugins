@@ -4,39 +4,47 @@ import { DeepIrisCard } from './DeepIrisCard.tsx'
 import { DEEPIRIS_NS, DeepIrisCardController } from './deepiris-card-controller.ts'
 import { deepirisLocaleEn, deepirisLocaleZh } from './locales.ts'
 
+export const name = 'deepiris'
 export const inject = ['slots', 'locale', 'connection', 'remote', 'settingsScope']
 
 export function apply(ctx: ClientContext): void {
-  ctx.locale.define(DEEPIRIS_NS, 'en', deepirisLocaleEn)
-  ctx.locale.define(DEEPIRIS_NS, 'zh', deepirisLocaleZh)
+  const { api } = (ctx.get('connection') || {}) as ConnectionHandle
 
-  const t = ctx.locale.t(DEEPIRIS_NS)
+  if (ctx.locale?.register) {
+    ctx.effect(
+      () => ctx.locale.register(DEEPIRIS_NS, { en: deepirisLocaleEn, zh: deepirisLocaleZh }),
+      'dsh-deepiris: locales',
+    )
+  }
 
-  const deepiris = new DeepIrisCardController(
-    () => ctx.settingsScope(DEEPIRIS_NS),
-    t,
-    () => ctx.locale.get(),
-    (handle: ConnectionHandle) => ctx.remote(handle).hasCredential('deepiris', 'apiKey'),
-    (handle: ConnectionHandle, key: string) => ctx.remote(handle).storeCredential('deepiris', 'apiKey', key),
-    (handle: ConnectionHandle) => ctx.remote(handle).deleteCredential('deepiris', 'apiKey'),
-  )
+  const scope = ctx.settingsScope.bind({ namespace: DEEPIRIS_NS })
+  const deepiris = new DeepIrisCardController(scope, api)
 
-  ctx.forwardedEvents.on('connection/open', ({ handle }) => {
-    deepiris.onConnectionOpen(handle)
-  })
-  ctx.forwardedEvents.on('connection/close', () => {
-    deepiris.onConnectionClose()
-  })
+  if (ctx.remote?.$on) {
+    ctx.effect(
+      () => ctx.remote.$on('credentials/updated', (ref: string) => { deepiris.refreshCredential(ref) }),
+      'dsh-deepiris: credential invalidations',
+    )
+  }
 
-  ctx.slots.inject('settings.plugin.item', function* () {
-    yield ctx.slots.register({
-      name: 'settings.plugin.item',
-      id: 'deepiris',
-      order: 30,
-      locale: DEEPIRIS_NS,
-      inject: () => deepiris.inject(),
-    }, DeepIrisCard)
-  })
+  if (ctx.slots?.inject) {
+    ctx.slots.inject('settings.plugin.item', function* () {
+      yield ctx.slots.register({
+        name: 'settings.plugin.item',
+        id: 'deepiris',
+        order: 30,
+        locale: DEEPIRIS_NS,
+        inject: () => deepiris.inject(),
+      }, DeepIrisCard)
+    })
+  }
 }
 
-export default apply
+apply.inject = inject
+apply.name = name
+
+export default {
+  name,
+  inject,
+  apply,
+}
