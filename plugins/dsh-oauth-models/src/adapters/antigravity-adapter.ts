@@ -1,7 +1,7 @@
 /**
  * Google Antigravity (Gemini) OAuth Adapter
  * Connects to Google Gemini models using CloudCode / Antigravity OAuth tokens or API keys.
- * Dynamically queries the remote Gemini /models API endpoint when connected.
+ * 100% dynamically synchronizes model list from remote Google Gemini API endpoint.
  */
 
 import { LlmAdapter } from '@deepseek-ai/dsh-llm'
@@ -15,7 +15,7 @@ import type {
 import type { TokenStore } from '../auth/token-store.ts'
 import type { QuotaService } from '../quota/quota-service.ts'
 
-interface RemoteGeminiModelMeta {
+interface DynamicGeminiModelMeta {
   name: string
   displayName?: string
   description?: string
@@ -24,19 +24,11 @@ interface RemoteGeminiModelMeta {
   supportedGenerationMethods?: string[]
 }
 
-const OFFICIAL_GEMINI_MODELS: readonly LlmModelInfo[] = [
-  { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', description: 'Next-generation multimodal model with low latency and native tool use' },
-  { id: 'gemini-2.0-flash-thinking-exp-01-21', name: 'Gemini 2.0 Flash Thinking Exp', description: 'Experimental model featuring real-time thinking and reasoning process' },
-  { id: 'gemini-2.0-pro-exp-02-05', name: 'Gemini 2.0 Pro Exp', description: 'Frontier experimental model optimized for coding and complex reasoning' },
-  { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro', description: '2M token ultra-long context multimodal reasoning model' },
-  { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash', description: 'Lightweight, fast multimodal model with 1M context window' },
-]
-
 export class AntigravityAdapter extends LlmAdapter {
   private readonly tokenStore: TokenStore
   private readonly quotaService?: QuotaService
   private readonly customBaseURL?: string
-  private readonly modelMetaCache = new Map<string, RemoteGeminiModelMeta>()
+  private readonly dynamicModels = new Map<string, DynamicGeminiModelMeta>()
 
   constructor(tokenStore: TokenStore, quotaService?: QuotaService, customBaseURL?: string) {
     super()
@@ -49,14 +41,13 @@ export class AntigravityAdapter extends LlmAdapter {
     return {
       id: 'antigravity',
       name: 'Google Antigravity (OAuth)',
-      description: 'Google Gemini models authenticated via Antigravity OAuth',
+      description: 'Google Gemini models dynamically synchronized via Antigravity OAuth',
     }
   }
 
   public override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
-    const modelsMap = new Map<string, LlmModelInfo>()
+    this.dynamicModels.clear()
 
-    // 1. Dynamic live query to remote Google Gemini /models API
     try {
       const token = this.tokenStore.loadToken('antigravity')
       const baseURL = (this.customBaseURL && this.customBaseURL.trim()) || 'https://generativelanguage.googleapis.com/v1beta'
@@ -79,7 +70,7 @@ export class AntigravityAdapter extends LlmAdapter {
       clearTimeout(timer)
 
       if (res.ok) {
-        const data = (await res.json()) as { models?: RemoteGeminiModelMeta[] }
+        const data = (await res.json()) as { models?: DynamicGeminiModelMeta[] }
         const list = data?.models || []
         for (const item of list) {
           const id = item.name.replace(/^models\//, '')
@@ -87,13 +78,7 @@ export class AntigravityAdapter extends LlmAdapter {
             item.supportedGenerationMethods?.includes('generateContent')
             || id.startsWith('gemini')
           ) {
-            this.modelMetaCache.set(id, item)
-            modelsMap.set(id, {
-              provider,
-              id,
-              name: item.displayName || id,
-              description: item.description || `Google ${id}`,
-            })
+            this.dynamicModels.set(id, item)
           }
         }
       }
@@ -101,18 +86,20 @@ export class AntigravityAdapter extends LlmAdapter {
       // Ignore network errors
     }
 
-    // 2. If remote returns models dynamically, return them directly
-    if (modelsMap.size > 0) {
-      return Array.from(modelsMap.values())
-    }
-
-    // 3. Fallback to official Gemini model catalog
-    return OFFICIAL_GEMINI_MODELS.map(m => ({ ...m, provider }))
+    return Array.from(this.dynamicModels.values()).map(m => {
+      const id = m.name.replace(/^models\//, '')
+      return {
+        provider,
+        id,
+        name: m.displayName || id,
+        description: m.description || `Google ${id}`,
+      }
+    })
   }
 
   public override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
-    const meta = this.modelMetaCache.get(model)
-    const isThinking = model.includes('thinking')
+    const meta = this.dynamicModels.get(model)
+    const isThinking = model.includes('thinking') || model.includes('thought')
 
     const contextWindow = meta?.inputTokenLimit || (model.includes('1.5-pro') ? 2000000 : 1000000)
     const maxTokens = meta?.outputTokenLimit || (model.includes('flash') && !isThinking ? 8192 : 65536)
@@ -120,7 +107,7 @@ export class AntigravityAdapter extends LlmAdapter {
     return Promise.resolve({
       provider,
       id: model,
-      name: meta?.displayName || OFFICIAL_GEMINI_MODELS.find(m => m.id === model)?.name || model,
+      name: meta?.displayName || model,
       context: {
         contextWindow: Number.isInteger(contextWindow) && contextWindow > 0 ? contextWindow : 1000000,
       },

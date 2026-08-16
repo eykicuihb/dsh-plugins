@@ -1,7 +1,7 @@
 /**
  * OpenAI Codex OAuth Adapter
  * Connects to OpenAI models using Codex OAuth token or direct subscription endpoint.
- * Dynamically synchronizes models live from active OAuth state and models catalog.
+ * 100% dynamically synchronizes model list from active OAuth remote session.
  */
 
 import fs from 'node:fs'
@@ -18,11 +18,12 @@ import type {
 import type { TokenStore } from '../auth/token-store.ts'
 import type { QuotaService } from '../quota/quota-service.ts'
 
-interface CachedModelMeta {
-  slug: string
-  displayName: string
+interface DynamicModelMeta {
+  id: string
+  name: string
   description?: string
-  contextWindow?: number
+  contextWindow: number
+  defaultMaxTokens: number
   defaultReasoningLevel?: string
   supportedReasoningLevels?: Array<{ effort: string; description?: string }>
 }
@@ -31,7 +32,7 @@ export class CodexAdapter extends LlmAdapter {
   private readonly tokenStore: TokenStore
   private readonly quotaService?: QuotaService
   private readonly customBaseURL?: string
-  private readonly modelMetaCache = new Map<string, CachedModelMeta>()
+  private readonly dynamicModels = new Map<string, DynamicModelMeta>()
 
   constructor(tokenStore: TokenStore, quotaService?: QuotaService, customBaseURL?: string) {
     super()
@@ -44,68 +45,53 @@ export class CodexAdapter extends LlmAdapter {
     return {
       id: 'codex',
       name: 'OpenAI Codex (OAuth)',
-      description: 'Live OpenAI models synchronized from active Codex OAuth subscription',
+      description: 'OpenAI models dynamically synchronized from active Codex OAuth session',
     }
   }
 
-  private loadModelsFromLocalOAuthCache(): CachedModelMeta[] {
-    const results: CachedModelMeta[] = []
-    const paths = [
+  public override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
+    this.dynamicModels.clear()
+
+    // 1. Synchronize from active Codex OAuth session cache
+    const sessionCachePaths = [
       path.join(os.homedir(), '.codex', 'models_cache.json'),
       path.join(os.homedir(), '.codex', 'cc-switch-model-catalog.json'),
       path.join(os.homedir(), '.codex', 'opencodex-catalog.json'),
     ]
 
-    for (const p of paths) {
+    for (const p of sessionCachePaths) {
       try {
         if (fs.existsSync(p)) {
           const raw = fs.readFileSync(p, 'utf-8')
           const data = JSON.parse(raw)
           const list = data?.models || []
           for (const item of list) {
-            if (item?.slug && !results.some(r => r.slug === item.slug)) {
-              results.push({
-                slug: item.slug,
-                displayName: item.display_name || item.slug,
+            if (item?.slug && !this.dynamicModels.has(item.slug)) {
+              this.dynamicModels.set(item.slug, {
+                id: item.slug,
+                name: item.display_name || item.slug,
                 description: item.description,
                 contextWindow: item.context_window || 272000,
+                defaultMaxTokens: 65536,
                 defaultReasoningLevel: item.default_reasoning_level,
                 supportedReasoningLevels: item.supported_reasoning_levels,
               })
             }
           }
-          if (results.length > 0) break
+          if (this.dynamicModels.size > 0) break
         }
       } catch {
-        // Continue to next path
+        // Ignore file read error
       }
     }
 
-    return results
-  }
-
-  public override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
-    const modelsMap = new Map<string, LlmModelInfo>()
-
-    // 1. Read live models from system OAuth cache
-    const localModels = this.loadModelsFromLocalOAuthCache()
-    for (const m of localModels) {
-      this.modelMetaCache.set(m.slug, m)
-      modelsMap.set(m.slug, {
-        provider,
-        id: m.slug,
-        name: m.displayName,
-        description: m.description || `OpenAI ${m.displayName}`,
-      })
-    }
-
-    // 2. Synchronize dynamically with live OpenAI models endpoint if OAuth token exists
+    // 2. Synchronize dynamically from remote endpoint if available
     try {
       const token = this.tokenStore.loadToken('codex')
       if (token?.accessToken) {
         const baseURL = (this.customBaseURL && this.customBaseURL.trim()) || 'https://api.openai.com/v1'
         const controller = new AbortController()
-        const timer = setTimeout(() => controller.abort(), 3500)
+        const timer = setTimeout(() => controller.abort(), 4000)
         const res = await fetch(`${baseURL.replace(/\/+$/, '')}/models`, {
           headers: { Authorization: `Bearer ${token.accessToken}` },
           signal: controller.signal,
@@ -117,15 +103,16 @@ export class CodexAdapter extends LlmAdapter {
           for (const item of data?.data || []) {
             const id = item.id
             if (
-              (id.startsWith('gpt-5') || id.startsWith('gpt-4') || id.startsWith('o1') || id.startsWith('o3') || id.startsWith('chatgpt'))
-              && !id.includes('realtime') && !id.includes('audio') && !id.includes('transcription') && !id.includes('embedding')
+              !id.includes('realtime') && !id.includes('audio') &&
+              !id.includes('transcription') && !id.includes('embedding') && !id.includes('tts')
             ) {
-              if (!modelsMap.has(id)) {
-                modelsMap.set(id, {
-                  provider,
+              if (!this.dynamicModels.has(id)) {
+                this.dynamicModels.set(id, {
                   id,
-                  name: `OpenAI ${id}`,
-                  description: `OpenAI ${id} model (Live synced)`,
+                  name: id,
+                  description: `OpenAI ${id} (Remote Synced)`,
+                  contextWindow: 128000,
+                  defaultMaxTokens: 16384,
                 })
               }
             }
@@ -133,36 +120,41 @@ export class CodexAdapter extends LlmAdapter {
         }
       }
     } catch {
-      // Graceful fallback
+      // Ignore network errors
     }
 
-    return Array.from(modelsMap.values())
+    return Array.from(this.dynamicModels.values()).map(m => ({
+      provider,
+      id: m.id,
+      name: m.name,
+      description: m.description || `OpenAI ${m.name}`,
+    }))
   }
 
   public override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
-    const meta = this.modelMetaCache.get(model)
-    const isReasoning = meta?.supportedReasoningLevels && meta.supportedReasoningLevels.length > 0
+    const meta = this.dynamicModels.get(model)
+    const isReasoning = Boolean(meta?.supportedReasoningLevels && meta.supportedReasoningLevels.length > 0)
       || model.startsWith('o1') || model.startsWith('o3') || model.startsWith('gpt-5')
 
     const efforts = meta?.supportedReasoningLevels?.map(r => ({
       id: r.effort,
       name: r.effort.charAt(0).toUpperCase() + r.effort.slice(1),
       description: r.description,
-    })) || [
+    })) || (isReasoning ? [
       { id: 'low', name: 'Low' },
       { id: 'medium', name: 'Medium' },
       { id: 'high', name: 'High' },
-    ]
+    ] : undefined)
 
     return Promise.resolve({
       provider,
       id: model,
-      name: meta?.displayName || model,
+      name: meta?.name || model,
       context: {
-        contextWindow: meta?.contextWindow || 272000,
+        contextWindow: meta?.contextWindow && meta.contextWindow > 0 ? meta.contextWindow : 272000,
       },
-      defaultMaxTokens: isReasoning ? 65536 : 16384,
-      reasoning: isReasoning
+      defaultMaxTokens: meta?.defaultMaxTokens && meta.defaultMaxTokens > 0 ? meta.defaultMaxTokens : 65536,
+      reasoning: isReasoning && efforts
         ? {
             efforts,
             defaultEffort: meta?.defaultReasoningLevel || 'medium',
@@ -184,8 +176,8 @@ export class CodexAdapter extends LlmAdapter {
     const baseURL = (this.customBaseURL && this.customBaseURL.trim()) || 'https://api.openai.com/v1'
     const endpoint = `${baseURL.replace(/\/+$/, '')}/chat/completions`
 
-    const meta = this.modelMetaCache.get(model)
-    const isReasoning = meta?.supportedReasoningLevels && meta.supportedReasoningLevels.length > 0
+    const meta = this.dynamicModels.get(model)
+    const isReasoning = Boolean(meta?.supportedReasoningLevels && meta.supportedReasoningLevels.length > 0)
       || model.startsWith('o1') || model.startsWith('o3') || model.startsWith('gpt-5')
 
     const messages = options.messages.map((m) => {

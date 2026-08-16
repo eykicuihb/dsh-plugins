@@ -1,7 +1,7 @@
 /**
  * xAI Grok OAuth Adapter
  * Connects to xAI Grok models using Grok OAuth token or subscription endpoint.
- * Dynamically queries the remote xAI /v1/models API endpoint when connected.
+ * 100% dynamically synchronizes model list from remote xAI /v1/models endpoint.
  */
 
 import { LlmAdapter } from '@deepseek-ai/dsh-llm'
@@ -15,23 +15,17 @@ import type {
 import type { TokenStore } from '../auth/token-store.ts'
 import type { QuotaService } from '../quota/quota-service.ts'
 
-interface RemoteGrokModelMeta {
+interface DynamicGrokModelMeta {
   id: string
   created?: number
   owned_by?: string
 }
 
-const OFFICIAL_GROK_MODELS: readonly LlmModelInfo[] = [
-  { id: 'grok-2-1212', name: 'Grok-2', description: 'High-performance general reasoning and coding model' },
-  { id: 'grok-2-vision-1212', name: 'Grok-2 Vision', description: 'Multimodal image and diagram comprehension' },
-  { id: 'grok-beta', name: 'Grok Beta', description: 'Standard high-speed Grok chat model' },
-]
-
 export class GrokAdapter extends LlmAdapter {
   private readonly tokenStore: TokenStore
   private readonly quotaService?: QuotaService
   private readonly customBaseURL?: string
-  private readonly modelMetaCache = new Map<string, RemoteGrokModelMeta>()
+  private readonly dynamicModels = new Map<string, DynamicGrokModelMeta>()
 
   constructor(tokenStore: TokenStore, quotaService?: QuotaService, customBaseURL?: string) {
     super()
@@ -44,14 +38,13 @@ export class GrokAdapter extends LlmAdapter {
     return {
       id: 'grok',
       name: 'xAI Grok (OAuth)',
-      description: 'xAI Grok models authenticated via SuperGrok / xAI OAuth',
+      description: 'xAI Grok models dynamically synchronized via SuperGrok / xAI OAuth',
     }
   }
 
   public override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
-    const modelsMap = new Map<string, LlmModelInfo>()
+    this.dynamicModels.clear()
 
-    // 1. Dynamic live query to remote xAI /models endpoint
     try {
       const token = this.tokenStore.loadToken('grok')
       const baseURL = (this.customBaseURL && this.customBaseURL.trim()) || 'https://api.x.ai/v1'
@@ -70,18 +63,11 @@ export class GrokAdapter extends LlmAdapter {
       clearTimeout(timer)
 
       if (res.ok) {
-        const data = (await res.json()) as { data?: RemoteGrokModelMeta[] }
+        const data = (await res.json()) as { data?: DynamicGrokModelMeta[] }
         const list = data?.data || []
         for (const item of list) {
-          const id = item.id
-          if (id.startsWith('grok')) {
-            this.modelMetaCache.set(id, item)
-            modelsMap.set(id, {
-              provider,
-              id,
-              name: id,
-              description: `xAI ${id} (Remote Synced)`,
-            })
+          if (item?.id) {
+            this.dynamicModels.set(item.id, item)
           }
         }
       }
@@ -89,25 +75,24 @@ export class GrokAdapter extends LlmAdapter {
       // Ignore network errors
     }
 
-    // 2. If remote returns models dynamically, return them directly
-    if (modelsMap.size > 0) {
-      return Array.from(modelsMap.values())
-    }
-
-    // 3. Fallback to official xAI model catalog
-    return OFFICIAL_GROK_MODELS.map(m => ({ ...m, provider }))
+    return Array.from(this.dynamicModels.values()).map(m => ({
+      provider,
+      id: m.id,
+      name: m.id,
+      description: `xAI ${m.id} model (Remote Synced)`,
+    }))
   }
 
   public override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
-    const isReasoning = model.includes('thinking') || model.includes('reasoning')
+    const isReasoning = model.includes('thinking') || model.includes('reasoning') || model.includes('grok-3')
     return Promise.resolve({
       provider,
       id: model,
-      name: OFFICIAL_GROK_MODELS.find(m => m.id === model)?.name || model,
+      name: model,
       context: {
         contextWindow: 131072,
       },
-      defaultMaxTokens: 8192,
+      defaultMaxTokens: isReasoning ? 32768 : 8192,
       reasoning: isReasoning
         ? {
             efforts: [
@@ -157,6 +142,10 @@ export class GrokAdapter extends LlmAdapter {
       stream: true,
       temperature: options.temperature ?? 0.7,
       max_tokens: options.maxTokens,
+    }
+
+    if (options.reasoningEffort && model.startsWith('grok-3')) {
+      body.reasoning_effort = options.reasoningEffort
     }
 
     const response = await fetch(endpoint, {
