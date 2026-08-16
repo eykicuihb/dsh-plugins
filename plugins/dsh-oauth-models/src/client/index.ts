@@ -48,7 +48,6 @@ export function apply(ctx: any): void {
 }
 
 apply.inject = inject
-apply.name = name
 
 export default {
   name,

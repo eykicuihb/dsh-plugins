@@ -36,8 +36,8 @@ export class GrokAdapter extends LlmAdapter {
     }
   }
 
-  public override listModels(_provider: string): Promise<readonly LlmModelInfo[]> {
-    return Promise.resolve(this.knownModels)
+  public override listModels(provider: string): Promise<readonly LlmModelInfo[]> {
+    return Promise.resolve(this.knownModels.map(m => ({ ...m, provider })))
   }
 
   public override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {

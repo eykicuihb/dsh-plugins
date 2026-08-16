@@ -33,6 +33,9 @@ export const name = 'deepiris'
 /** Settings namespace for DeepIris configuration. */
 export const DEEPIRIS_SETTINGS_NAMESPACE = settingsNamespace('deepiris')
 
+/** Required services for DeepIris backend plugin. */
+export const inject = ['settings', 'tools', 'systemPrompt']
+
 /**
  * Apply DeepIris plugin to the Cordis context.
  */
@@ -52,4 +55,12 @@ export function apply(ctx: Context, initialConfig: Config = {}): void {
 
   // 3. Register the model-facing view_image tool
   registerViewImageTool(ctx, () => currentConfig())
+}
+
+apply.inject = inject
+
+export default {
+  name,
+  inject,
+  apply,
 }

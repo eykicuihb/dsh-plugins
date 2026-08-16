@@ -41,7 +41,6 @@ export function apply(ctx: ClientContext): void {
 }
 
 apply.inject = inject
-apply.name = name
 
 export default {
   name,
