@@ -21,45 +21,32 @@ export function QuotaCard({
   onDisconnect,
 }: QuotaCardProps): React.JSX.Element {
   const isConnected = metrics.status === 'connected'
-  const isUnauthorized = metrics.status === 'unauthorized'
+  const isExpired = metrics.status === 'expired'
 
-  // Calculate percentage of requests remaining
-  const reqLimit = metrics.requestsLimit || 100
-  const reqRemaining = metrics.requestsRemaining !== undefined ? metrics.requestsRemaining : 0
-  const reqPercent = Math.min(100, Math.max(0, Math.round((reqRemaining / reqLimit) * 100)))
-
-  // Calculate percentage of tokens remaining
-  const tokLimit = metrics.tokensLimit || 1000000
-  const tokRemaining = metrics.tokensRemaining !== undefined ? metrics.tokensRemaining : 0
-  const tokPercent = Math.min(100, Math.max(0, Math.round((tokRemaining / tokLimit) * 100)))
-
-  const statusColor =
-    metrics.status === 'connected'
-      ? '#10b981'
-      : metrics.status === 'refreshing'
-      ? '#f59e0b'
-      : metrics.status === 'expired'
-      ? '#ef4444'
-      : '#6b7280'
+  const statusColor = isConnected ? '#10b981' : isExpired ? '#ef4444' : '#64748b'
+  const statusText = isConnected ? 'CONNECTED' : isExpired ? 'EXPIRED' : 'UNAUTHORIZED'
 
   return (
     <div
       style={{
-        border: '1px solid var(--color-border, #e5e7eb)',
+        border: '1px solid rgba(255, 255, 255, 0.08)',
         borderRadius: '12px',
         padding: '20px',
-        backgroundColor: 'var(--color-bg-card, #ffffff)',
-        boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
+        backgroundColor: '#181b24',
+        color: '#e2e8f0',
         display: 'flex',
         flexDirection: 'column',
         gap: '16px',
+        boxShadow: '0 4px 12px rgba(0, 0, 0, 0.2)',
       }}
     >
-      {/* Header with Title & Status Badge */}
+      {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div>
-          <h3 style={{ margin: '0 0 4px 0', fontSize: '1.1rem', fontWeight: 600 }}>{title}</h3>
-          <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--color-text-secondary, #6b7280)' }}>
+          <h3 style={{ margin: '0 0 4px 0', fontSize: '1.05rem', fontWeight: 600, color: '#f8fafc' }}>
+            {title}
+          </h3>
+          <p style={{ margin: 0, fontSize: '0.85rem', color: '#94a3b8', lineHeight: 1.4 }}>
             {description}
           </p>
         </div>
@@ -70,180 +57,137 @@ export function QuotaCard({
             gap: '6px',
             padding: '4px 10px',
             borderRadius: '9999px',
-            backgroundColor: `${statusColor}15`,
+            backgroundColor: `${statusColor}20`,
             color: statusColor,
-            fontSize: '0.8rem',
-            fontWeight: 600,
+            fontSize: '0.75rem',
+            fontWeight: 700,
+            letterSpacing: '0.05em',
           }}
         >
           <span
             style={{
-              width: '8px',
-              height: '8px',
+              width: '6px',
+              height: '6px',
               borderRadius: '50%',
               backgroundColor: statusColor,
             }}
           />
-          {metrics.status.toUpperCase()}
+          {statusText}
         </div>
       </div>
 
-      {/* Account Details */}
-      {isConnected && (
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: '1fr 1fr',
-            gap: '8px',
-            padding: '10px 14px',
-            borderRadius: '8px',
-            backgroundColor: 'var(--color-bg-subtle, #f9fafb)',
-            fontSize: '0.85rem',
-          }}
-        >
-          <div>
-            <span style={{ color: '#6b7280' }}>Account: </span>
-            <strong>{metrics.accountEmail || 'Authenticated User'}</strong>
-          </div>
-          <div>
-            <span style={{ color: '#6b7280' }}>Plan: </span>
-            <strong>{metrics.subscriptionTier || 'Standard Subscription'}</strong>
-          </div>
-        </div>
-      )}
-
-      {/* Metrics & Progress Bars */}
+      {/* Connected State Content */}
       {isConnected ? (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-          {/* Requests Remaining Progress Bar */}
-          <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', marginBottom: '4px' }}>
-              <span>Requests Remaining</span>
-              <span>
-                <strong>{reqRemaining}</strong> / {reqLimit} ({reqPercent}%)
-              </span>
-            </div>
-            <div style={{ width: '100%', height: '8px', borderRadius: '4px', backgroundColor: '#e5e7eb', overflow: 'hidden' }}>
-              <div
-                style={{
-                  width: `${reqPercent}%`,
-                  height: '100%',
-                  backgroundColor: reqPercent > 20 ? '#3b82f6' : '#ef4444',
-                  borderRadius: '4px',
-                  transition: 'width 0.3s ease',
-                }}
-              />
-            </div>
-          </div>
-
-          {/* Tokens Remaining Progress Bar */}
-          <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', marginBottom: '4px' }}>
-              <span>Available Tokens</span>
-              <span>
-                <strong>{tokRemaining.toLocaleString()}</strong> / {tokLimit.toLocaleString()} ({tokPercent}%)
-              </span>
-            </div>
-            <div style={{ width: '100%', height: '8px', borderRadius: '4px', backgroundColor: '#e5e7eb', overflow: 'hidden' }}>
-              <div
-                style={{
-                  width: `${tokPercent}%`,
-                  height: '100%',
-                  backgroundColor: '#10b981',
-                  borderRadius: '4px',
-                  transition: 'width 0.3s ease',
-                }}
-              />
-            </div>
-          </div>
-
-          {/* Rate Limits & Auto-renew meta */}
+        <>
           <div
             style={{
               display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              fontSize: '0.8rem',
-              color: '#6b7280',
-              marginTop: '4px',
+              flexDirection: 'column',
+              gap: '6px',
+              padding: '12px 14px',
+              borderRadius: '8px',
+              backgroundColor: '#1e2330',
+              border: '1px solid rgba(255, 255, 255, 0.05)',
+              fontSize: '0.85rem',
             }}
           >
-            <span>✨ Auto-silent renewal active</span>
-            {metrics.requestsResetSeconds && (
-              <span>Reset in: {Math.round(metrics.requestsResetSeconds / 60)} mins</span>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span style={{ color: '#94a3b8' }}>账号 (Account):</span>
+              <strong style={{ color: '#38bdf8' }}>{metrics.accountEmail || '已授权账号'}</strong>
+            </div>
+            {metrics.subscriptionTier && (
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span style={{ color: '#94a3b8' }}>订阅 (Plan):</span>
+                <strong style={{ color: '#a78bfa' }}>{metrics.subscriptionTier}</strong>
+              </div>
             )}
           </div>
-        </div>
+
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 'auto', paddingTop: '8px' }}>
+            <span style={{ fontSize: '0.8rem', color: '#10b981', display: 'flex', alignItems: 'center', gap: '4px' }}>
+              ✨ OAuth 授权已激活，模型目录实时同步中
+            </span>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button
+                type="button"
+                onClick={onRefresh}
+                disabled={isRefreshing}
+                style={{
+                  padding: '6px 12px',
+                  borderRadius: '6px',
+                  border: '1px solid rgba(255, 255, 255, 0.12)',
+                  backgroundColor: 'transparent',
+                  color: '#cbd5e1',
+                  fontSize: '0.8rem',
+                  fontWeight: 500,
+                  cursor: isRefreshing ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {isRefreshing ? '...' : '刷新'}
+              </button>
+              <button
+                type="button"
+                onClick={onDisconnect}
+                style={{
+                  padding: '6px 12px',
+                  borderRadius: '6px',
+                  border: '1px solid rgba(239, 68, 68, 0.3)',
+                  backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                  color: '#f87171',
+                  fontSize: '0.8rem',
+                  fontWeight: 500,
+                  cursor: 'pointer',
+                }}
+              >
+                退出登录
+              </button>
+            </div>
+          </div>
+        </>
       ) : (
+        /* Unauthorized State Content */
         <div
           style={{
-            padding: '24px',
-            textAlign: 'center',
-            backgroundColor: '#f9fafb',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '12px',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '20px 14px',
             borderRadius: '8px',
-            color: '#6b7280',
-            fontSize: '0.9rem',
+            backgroundColor: '#1e2330',
+            border: '1px dashed rgba(255, 255, 255, 0.1)',
+            textAlign: 'center',
           }}
         >
-          {isUnauthorized
-            ? 'No OAuth credentials configured. Click Login to connect your account.'
-            : 'Token expired or invalid. Please re-authenticate.'}
-        </div>
-      )}
-
-      {/* Action Buttons */}
-      <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '4px' }}>
-        {isConnected ? (
-          <>
-            <button
-              onClick={onRefresh}
-              disabled={isRefreshing}
-              style={{
-                padding: '6px 14px',
-                borderRadius: '6px',
-                border: '1px solid #d1d5db',
-                backgroundColor: '#ffffff',
-                cursor: isRefreshing ? 'not-allowed' : 'pointer',
-                fontSize: '0.85rem',
-                fontWeight: 500,
-              }}
-            >
-              {isRefreshing ? 'Refreshing…' : 'Refresh Quota'}
-            </button>
-            <button
-              onClick={onDisconnect}
-              style={{
-                padding: '6px 14px',
-                borderRadius: '6px',
-                border: '1px solid #fee2e2',
-                backgroundColor: '#fef2f2',
-                color: '#ef4444',
-                cursor: 'pointer',
-                fontSize: '0.85rem',
-                fontWeight: 500,
-              }}
-            >
-              Sign Out
-            </button>
-          </>
-        ) : (
+          <p style={{ margin: 0, fontSize: '0.85rem', color: '#94a3b8' }}>
+            尚未连接 OAuth 账号。点击下方按钮通过浏览器完成官方授权登录。
+          </p>
           <button
+            type="button"
             onClick={onLogin}
+            disabled={isRefreshing}
             style={{
-              padding: '8px 18px',
-              borderRadius: '6px',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '8px',
+              padding: '10px 20px',
+              borderRadius: '8px',
               border: 'none',
               backgroundColor: '#2563eb',
               color: '#ffffff',
-              cursor: 'pointer',
               fontSize: '0.9rem',
               fontWeight: 600,
+              cursor: isRefreshing ? 'not-allowed' : 'pointer',
+              boxShadow: '0 2px 6px rgba(37, 99, 235, 0.3)',
+              transition: 'background-color 0.2s',
             }}
           >
-            Authenticate / Login
+            {isRefreshing ? '正在等待浏览器授权...' : '🔑 OAuth 浏览器登录'}
           </button>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   )
 }

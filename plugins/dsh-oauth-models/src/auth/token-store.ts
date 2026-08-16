@@ -26,7 +26,7 @@ export class TokenStore {
         fs.mkdirSync(this.storageDir, { recursive: true })
       }
     } catch {
-      // Ignore directory creation failure in sandboxed / non-fs test environments
+      // Ignore directory creation failure
     }
   }
 
@@ -43,7 +43,6 @@ export class TokenStore {
       return this.cache.get(provider)
     }
 
-    // 1. Check local DSH oauth storage
     const filePath = this.getTokenFilePath(provider)
     try {
       if (fs.existsSync(filePath)) {
@@ -58,70 +57,32 @@ export class TokenStore {
       // Ignore parse failure
     }
 
-    // 2. Multi-source automatic bridge for system OAuth credentials
-    if (provider === 'codex') {
-      try {
-        const codexAuthPath = path.join(os.homedir(), '.codex', 'auth.json')
-        if (fs.existsSync(codexAuthPath)) {
-          const raw = fs.readFileSync(codexAuthPath, 'utf-8')
-          const auth = JSON.parse(raw)
-          const token = auth?.tokens?.access_token || auth?.OPENAI_API_KEY || auth?.tokens?.id_token
-          if (token) {
-            const data: OAuthTokenData = {
-              provider: 'codex',
-              accessToken: token,
-              refreshToken: auth?.tokens?.refresh_token,
-              tokenType: 'Bearer',
-              email: auth?.tokens?.account_id || 'codex-oauth@local',
-            }
-            this.cache.set(provider, data)
-            return data
-          }
-        }
-      } catch {
-        // Ignore
-      }
-    }
-
-    if (provider === 'antigravity') {
-      try {
-        const geminiAuthPath = path.join(os.homedir(), '.gemini', 'oauth_creds.json')
-        if (fs.existsSync(geminiAuthPath)) {
-          const raw = fs.readFileSync(geminiAuthPath, 'utf-8')
-          const auth = JSON.parse(raw)
-          if (auth?.access_token) {
-            const data: OAuthTokenData = {
-              provider: 'antigravity',
-              accessToken: auth.access_token,
-              refreshToken: auth.refresh_token,
-              tokenType: auth.token_type || 'Bearer',
-              expiresAt: auth.expiry_date,
-              email: 'antigravity-oauth@local',
-            }
-            this.cache.set(provider, data)
-            return data
-          }
-        }
-      } catch {
-        // Ignore
-      }
-    }
-
     return undefined
   }
 
-  public saveToken(data: OAuthTokenData): void {
+  public saveToken(provider: OAuthProviderType, data: Partial<OAuthTokenData>): void {
     this.ensureStorageDir()
-    this.cache.set(data.provider, data)
-    const filePath = this.getTokenFilePath(data.provider)
+    const fullData: OAuthTokenData = {
+      provider,
+      accessToken: data.accessToken || '',
+      refreshToken: data.refreshToken,
+      tokenType: data.tokenType || 'Bearer',
+      expiresAt: data.expiresAt,
+      accountEmail: data.accountEmail,
+      accountId: data.accountId,
+      subscriptionTier: data.subscriptionTier,
+      updatedAt: Date.now(),
+    }
+    this.cache.set(provider, fullData)
+    const filePath = this.getTokenFilePath(provider)
     try {
-      fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8')
+      fs.writeFileSync(filePath, JSON.stringify(fullData, null, 2), 'utf-8')
     } catch (err) {
-      console.error(`[dsh-oauth-models] Failed to persist token for ${data.provider}:`, err)
+      console.error(`[dsh-oauth-models] Failed to persist token for ${provider}:`, err)
     }
   }
 
-  public deleteToken(provider: OAuthProviderType): void {
+  public clearToken(provider: OAuthProviderType): void {
     this.cache.delete(provider)
     const filePath = this.getTokenFilePath(provider)
     try {
@@ -131,6 +92,10 @@ export class TokenStore {
     } catch {
       // Ignore deletion errors
     }
+  }
+
+  public deleteToken(provider: OAuthProviderType): void {
+    this.clearToken(provider)
   }
 
   public getStatus(provider: OAuthProviderType, leadTimeMs: number = 60000): OAuthConnectionStatus {
@@ -160,34 +125,28 @@ export class TokenStore {
       return token.accessToken
     }
 
-    if (!token.refreshToken) {
-      if (now >= token.expiresAt) {
-        throw new Error(`[dsh-oauth-models] OAuth token for ${provider} has expired and no refresh token is available.`)
-      }
+    const handler = this.refreshHandlers.get(provider)
+    if (!handler) {
       return token.accessToken
     }
 
-    let refreshPromise = this.refreshPromises.get(provider)
-    if (!refreshPromise) {
-      const handler = this.refreshHandlers.get(provider)
-      if (!handler) {
-        throw new Error(`[dsh-oauth-models] No refresh handler registered for provider: ${provider}`)
-      }
-
-      refreshPromise = (async () => {
-        try {
-          const updated = await handler.refreshToken(token)
-          this.saveToken(updated)
-          return updated
-        } finally {
-          this.refreshPromises.delete(provider)
-        }
-      })()
-
-      this.refreshPromises.set(provider, refreshPromise)
+    if (this.refreshPromises.has(provider)) {
+      const refreshed = await this.refreshPromises.get(provider)!
+      return refreshed.accessToken
     }
 
-    const updatedToken = await refreshPromise
-    return updatedToken.accessToken
+    const refreshPromise = (async () => {
+      try {
+        const refreshed = await handler.refreshToken(token)
+        this.saveToken(provider, refreshed)
+        return refreshed
+      } finally {
+        this.refreshPromises.delete(provider)
+      }
+    })()
+
+    this.refreshPromises.set(provider, refreshPromise)
+    const result = await refreshPromise
+    return result.accessToken
   }
 }

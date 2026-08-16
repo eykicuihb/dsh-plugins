@@ -43,7 +43,7 @@ export class OAuthServer {
   private callbackServers = new Map<number, http.Server>()
   private activeSessions = new Map<string, PKCESession>()
 
-  // Provider OAuth Configs (reads from env or public client identifiers)
+  // Provider OAuth Configs
   private readonly codexConfig = {
     clientId: process.env.OPENAI_CODEX_CLIENT_ID || Buffer.from('YXBwX0VNb2FtRUVaNzNmMENrWGFYcDdocmFubg==', 'base64').toString('utf8'),
     authUrl: 'https://auth.openai.com/oauth/authorize',
@@ -71,8 +71,8 @@ export class OAuthServer {
 
   private readonly grokConfig = {
     clientId: process.env.XAI_GROK_CLIENT_ID || Buffer.from('YjFhMDA0OTItMDczYS00N2VhLTgxNmYtNGMzMjkyNjRhODI4', 'base64').toString('utf8'),
-    authUrl: 'https://auth.x.ai/oauth/authorize',
-    tokenUrl: 'https://auth.x.ai/oauth/token',
+    authUrl: 'https://auth.x.ai/oauth2/authorize',
+    tokenUrl: 'https://auth.x.ai/oauth2/token',
     scope: 'openid profile email offline_access grok-cli:access api:access',
     port: 56121,
     path: '/callback',
@@ -84,14 +84,23 @@ export class OAuthServer {
 
   public async start(): Promise<void> {
     // 1. Start control server on port 14555
-    this.controlServer = http.createServer((req, res) => {
+    const control = http.createServer((req, res) => {
       this.handleControlRequest(req, res)
     })
 
+    control.on('error', (err: any) => {
+      if (err.code === 'EADDRINUSE') {
+        // Port already bound by another worker / reload
+      }
+    })
+
     await new Promise<void>((resolve) => {
-      this.controlServer?.listen(14555, '127.0.0.1', () => {
+      control.listen(14555, '127.0.0.1', () => {
+        this.controlServer = control
         resolve()
       })
+      // Resolve after timeout in case port was occupied
+      setTimeout(resolve, 200)
     })
 
     // 2. Start provider-specific callback servers
@@ -124,20 +133,23 @@ export class OAuthServer {
         res.end('Not Found')
       })
 
+      server.on('error', (_err: any) => {
+        // Handle EADDRINUSE gracefully
+      })
+
       await new Promise<void>((resolve) => {
         server.listen(port, '127.0.0.1', () => {
           this.callbackServers.set(port, server)
           resolve()
         })
-      }).catch(() => {
-        // Ignore if port already managed
+        setTimeout(resolve, 200)
       })
     } catch {
       // Ignore bind error
     }
   }
 
-  private async handleControlRequest(req: http.ServerRequest, res: http.ServerResponse): Promise<void> {
+  private async handleControlRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     // Enable CORS for DSH WebUI
     res.setHeader('Access-Control-Allow-Origin', '*')
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
@@ -157,21 +169,28 @@ export class OAuthServer {
       const antigravityToken = this.tokenStore.loadToken('antigravity')
       const grokToken = this.tokenStore.loadToken('grok')
 
+      const isCodexConnected = Boolean(codexToken?.accessToken && (codexToken?.expiresAt ? codexToken.expiresAt > Date.now() : true))
+      const isAntigravityConnected = Boolean(antigravityToken?.accessToken && (antigravityToken?.expiresAt ? antigravityToken.expiresAt > Date.now() : true))
+      const isGrokConnected = Boolean(grokToken?.accessToken && (grokToken?.expiresAt ? grokToken.expiresAt > Date.now() : true))
+
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({
         codex: {
-          connected: Boolean(codexToken?.accessToken),
-          email: codexToken?.accountEmail || (codexToken?.accessToken ? 'codex-user@openai.com' : undefined),
+          connected: isCodexConnected,
+          email: isCodexConnected ? (codexToken?.accountEmail || 'ChatGPT User') : undefined,
+          plan: isCodexConnected ? (codexToken?.subscriptionTier || 'ChatGPT Plus / Pro') : undefined,
           expiresAt: codexToken?.expiresAt,
         },
         antigravity: {
-          connected: Boolean(antigravityToken?.accessToken),
-          email: antigravityToken?.accountEmail || (antigravityToken?.accessToken ? 'google-user@gmail.com' : undefined),
+          connected: isAntigravityConnected,
+          email: isAntigravityConnected ? (antigravityToken?.accountEmail || 'Google User') : undefined,
+          plan: isAntigravityConnected ? 'Google CloudCode PA' : undefined,
           expiresAt: antigravityToken?.expiresAt,
         },
         grok: {
-          connected: Boolean(grokToken?.accessToken),
-          email: grokToken?.accountEmail || (grokToken?.accessToken ? 'xai-user@x.ai' : undefined),
+          connected: isGrokConnected,
+          email: isGrokConnected ? (grokToken?.accountEmail || 'xAI User') : undefined,
+          plan: isGrokConnected ? 'SuperGrok / Premium' : undefined,
           expiresAt: grokToken?.expiresAt,
         },
       }))
