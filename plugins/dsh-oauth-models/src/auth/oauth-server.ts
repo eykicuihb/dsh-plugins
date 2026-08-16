@@ -1,6 +1,7 @@
 /**
  * OAuth 2.0 PKCE Authorization & Quota Control Server
  * Runs a local server on port 14555 for WebUI control and handles callbacks on standard ports.
+ * All quotas and rate limits are fetched 100% dynamically from official remote APIs.
  */
 
 import http from 'node:http'
@@ -24,7 +25,7 @@ const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_OAUTH_CLIENT_SECRET || Buffer.fr
 
 function formatChineseDate(input: string | number | Date): string {
   try {
-    const d = new Date(input)
+    const d = typeof input === 'number' && input < 1e11 ? new Date(input * 1000) : new Date(input)
     if (isNaN(d.getTime())) return ''
     const y = d.getFullYear()
     const m = d.getMonth() + 1
@@ -141,6 +142,9 @@ export class OAuthServer {
     }
   }
 
+  /**
+   * 100% Dynamic Quota from Google Antigravity Remote API
+   */
   private async fetchAntigravityLiveQuota(token: OAuthTokenData): Promise<{
     modelQuotas: ModelQuotaDetail[]
     quotaWindows: QuotaWindowDetail[]
@@ -191,93 +195,129 @@ export class OAuthServer {
           }
         }
 
-        // 1. 5-Hour Window Limit
-        quotaWindows.push({
-          id: 'antigravity-5h',
-          label: '5小时周期限额',
-          remainingPercentage: fiveHourPercent,
-          resetTimeFormatted: fiveHourReset ? formatChineseDate(fiveHourReset) : formatChineseDate(Date.now() + 5 * 3600000),
-        })
+        // 1. 5-Hour Rolling Limit
+        if (fiveHourReset || modelQuotas.length > 0) {
+          quotaWindows.push({
+            id: 'antigravity-5h',
+            label: '5小时周期限额',
+            remainingPercentage: fiveHourPercent,
+            resetTimeFormatted: fiveHourReset ? formatChineseDate(fiveHourReset) : undefined,
+          })
+        }
 
-        // 2. Weekly Window Limit
-        quotaWindows.push({
-          id: 'antigravity-weekly',
-          label: '每周使用限额',
-          remainingPercentage: weeklyPercent,
-          resetTimeFormatted: weeklyReset ? formatChineseDate(weeklyReset) : formatChineseDate(Date.now() + 4 * 86400000),
-        })
+        // 2. Weekly Limit
+        if (weeklyReset || modelQuotas.length > 0) {
+          quotaWindows.push({
+            id: 'antigravity-weekly',
+            label: '每周使用限额',
+            remainingPercentage: weeklyPercent,
+            resetTimeFormatted: weeklyReset ? formatChineseDate(weeklyReset) : undefined,
+          })
+        }
       }
     } catch {
-      // Fallback
-    }
-
-    if (quotaWindows.length === 0) {
-      quotaWindows.push(
-        {
-          id: 'antigravity-5h',
-          label: '5小时周期限额',
-          remainingPercentage: 85,
-          resetTimeFormatted: formatChineseDate(Date.now() + 4.5 * 3600000),
-        },
-        {
-          id: 'antigravity-weekly',
-          label: '每周使用限额',
-          remainingPercentage: 92,
-          resetTimeFormatted: formatChineseDate(Date.now() + 4 * 86400000),
-        },
-      )
+      // Ignore network error
     }
 
     return { modelQuotas, quotaWindows }
   }
 
+  /**
+   * 100% Dynamic Quota from xAI Grok Remote Billing API (format=credits)
+   */
   private async fetchGrokLiveQuota(token: OAuthTokenData): Promise<QuotaWindowDetail[]> {
     const windows: QuotaWindowDetail[] = []
     try {
-      const res = await fetch('https://cli-chat-proxy.grok.com/v1/billing', {
+      const res = await fetch('https://cli-chat-proxy.grok.com/v1/billing?format=credits', {
         headers: {
           'Accept': 'application/json',
           'Authorization': `Bearer ${token.accessToken}`,
+          'x-grok-client-mode': 'cli',
         },
       })
       if (res.ok) {
         const data = await res.json()
-        const usedVal = data?.config?.used?.val ?? 222
-        // If limit is ~7400, usedVal 222 => 3% used => 97% remaining
-        const usedPercent = usedVal > 0 ? Math.max(1, Math.round((usedVal / 7400) * 100)) : 0
-        const remainingPercent = 100 - usedPercent
+        const cfg = data?.config
+        const usedPercent = typeof cfg?.creditUsagePercent === 'number' ? cfg.creditUsagePercent : 0
+        const remainingPercent = Math.max(0, 100 - usedPercent)
+        const periodEnd = cfg?.currentPeriod?.end || cfg?.billingPeriodEnd
 
-        // Weekly Reset: Thursday at 23:20 (11:20 PM)
-        const grokReset = new Date()
-        grokReset.setDate(grokReset.getDate() + ((4 + 7 - grokReset.getDay()) % 7 || 7))
-        grokReset.setHours(23, 20, 0, 0)
-
-        // Weekly SuperGrok Limit
         windows.push({
           id: 'grok-weekly',
           label: '每周使用限额 (Weekly SuperGrok Limit)',
           remainingPercentage: remainingPercent,
-          resetTimeFormatted: formatChineseDate(grokReset),
+          resetTimeFormatted: periodEnd ? formatChineseDate(periodEnd) : undefined,
         })
       }
     } catch {
-      // Fallback
+      // Ignore network error
     }
-
-    if (windows.length === 0) {
-      const grokReset = new Date()
-      grokReset.setDate(grokReset.getDate() + ((4 + 7 - grokReset.getDay()) % 7 || 7))
-      grokReset.setHours(23, 20, 0, 0)
-
-      windows.push({
-        id: 'grok-weekly',
-        label: '每周使用限额 (Weekly SuperGrok Limit)',
-        remainingPercentage: 97,
-        resetTimeFormatted: formatChineseDate(grokReset),
-      })
-    }
-
     return windows
+  }
+
+  /**
+   * 100% Dynamic Quota from OpenAI ChatGPT Backend WHAM Usage API
+   */
+  private async fetchCodexLiveQuota(token: OAuthTokenData): Promise<{
+    quotaWindows: QuotaWindowDetail[]
+    planType?: string
+  }> {
+    const quotaWindows: QuotaWindowDetail[] = []
+    let planType: string | undefined
+
+    try {
+      const headers: Record<string, string> = {
+        'Authorization': `Bearer ${token.accessToken}`,
+        'Accept': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
+      }
+      if (token.accountId) {
+        headers['ChatGPT-Account-Id'] = token.accountId
+      }
+
+      const res = await fetch('https://chatgpt.com/backend-api/wham/usage', { headers })
+      if (res.ok) {
+        const data = await res.json()
+        planType = data.plan_type ? `ChatGPT ${data.plan_type.toUpperCase()}` : undefined
+
+        const rateLimit = data.rate_limit
+        if (rateLimit) {
+          const primary = rateLimit.primary_window
+          if (primary) {
+            const usedPct = typeof primary.used_percent === 'number' ? primary.used_percent : 0
+            const remainingPct = Math.max(0, 100 - usedPct)
+            const resetAt = primary.reset_at
+
+            quotaWindows.push({
+              id: 'codex-primary',
+              label: primary.limit_window_seconds >= 604800 ? '每周使用限额' : '使用限额',
+              remainingPercentage: remainingPct,
+              resetTimeFormatted: resetAt ? formatChineseDate(resetAt) : undefined,
+              resetAt: typeof resetAt === 'number' ? resetAt * 1000 : undefined,
+            })
+          }
+
+          const secondary = rateLimit.secondary_window
+          if (secondary) {
+            const usedPct = typeof secondary.used_percent === 'number' ? secondary.used_percent : 0
+            const remainingPct = Math.max(0, 100 - usedPct)
+            const resetAt = secondary.reset_at
+
+            quotaWindows.push({
+              id: 'codex-secondary',
+              label: '周期限额',
+              remainingPercentage: remainingPct,
+              resetTimeFormatted: resetAt ? formatChineseDate(resetAt) : undefined,
+              resetAt: typeof resetAt === 'number' ? resetAt * 1000 : undefined,
+            })
+          }
+        }
+      }
+    } catch {
+      // Ignore network error
+    }
+
+    return { quotaWindows, planType }
   }
 
   private async handleControlRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -304,44 +344,34 @@ export class OAuthServer {
       const isAntigravityConnected = Boolean(antigravityToken?.accessToken && (antigravityToken?.expiresAt ? antigravityToken.expiresAt > Date.now() : true))
       const isGrokConnected = Boolean(grokToken?.accessToken && (grokToken?.expiresAt ? grokToken.expiresAt > Date.now() : true))
 
-      let antigravityLive: { modelQuotas: ModelQuotaDetail[]; quotaWindows: QuotaWindowDetail[] } = { modelQuotas: [], quotaWindows: [] }
-      if (isAntigravityConnected && antigravityToken) {
-        antigravityLive = await this.fetchAntigravityLiveQuota(antigravityToken)
-      }
-
-      let grokWindows: QuotaWindowDetail[] = []
-      if (isGrokConnected && grokToken) {
-        grokWindows = await this.fetchGrokLiveQuota(grokToken)
-      }
-
-      // Next Weekly Reset Timestamp for Codex (e.g. Thursday 14:44)
-      const nextWeeklyReset = new Date()
-      nextWeeklyReset.setDate(nextWeeklyReset.getDate() + ((4 + 7 - nextWeeklyReset.getDay()) % 7 || 7))
-      nextWeeklyReset.setHours(14, 44, 0, 0)
-      const weeklyResetFormatted = formatChineseDate(nextWeeklyReset)
+      // 100% Dynamic Quota fetching concurrently for all active providers
+      const [antigravityLive, grokWindows, codexLive] = await Promise.all([
+        isAntigravityConnected && antigravityToken
+          ? this.fetchAntigravityLiveQuota(antigravityToken)
+          : Promise.resolve({ modelQuotas: [], quotaWindows: [] }),
+        isGrokConnected && grokToken
+          ? this.fetchGrokLiveQuota(grokToken)
+          : Promise.resolve([]),
+        isCodexConnected && codexToken
+          ? this.fetchCodexLiveQuota(codexToken)
+          : Promise.resolve({ quotaWindows: [] }),
+      ])
 
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({
         codex: {
           connected: isCodexConnected,
           email: isCodexConnected ? (codexToken?.accountEmail || 'ChatGPT User') : undefined,
-          plan: isCodexConnected ? (codexToken?.subscriptionTier || 'ChatGPT Plus / Pro') : undefined,
+          plan: isCodexConnected ? (codexLive.planType || codexToken?.subscriptionTier || 'ChatGPT Plus / Pro') : undefined,
           expiresAt: codexToken?.expiresAt,
-          quotaWindows: isCodexConnected ? [
-            {
-              id: 'codex-weekly',
-              label: '每周使用限额',
-              remainingPercentage: 45,
-              resetTimeFormatted: weeklyResetFormatted,
-            },
-          ] : undefined,
+          quotaWindows: isCodexConnected && codexLive.quotaWindows.length > 0 ? codexLive.quotaWindows : undefined,
         },
         antigravity: {
           connected: isAntigravityConnected,
           email: isAntigravityConnected ? (antigravityToken?.accountEmail || 'Google User') : undefined,
           plan: isAntigravityConnected ? (antigravityToken?.subscriptionTier || 'Google CloudCode PA') : undefined,
           expiresAt: antigravityToken?.expiresAt,
-          quotaWindows: isAntigravityConnected ? antigravityLive.quotaWindows : undefined,
+          quotaWindows: isAntigravityConnected && antigravityLive.quotaWindows.length > 0 ? antigravityLive.quotaWindows : undefined,
           modelQuotas: antigravityLive.modelQuotas.length > 0 ? antigravityLive.modelQuotas : undefined,
         },
         grok: {
@@ -349,7 +379,7 @@ export class OAuthServer {
           email: isGrokConnected ? (grokToken?.accountEmail || 'xAI User') : undefined,
           plan: isGrokConnected ? (grokToken?.subscriptionTier || 'SuperGrok') : undefined,
           expiresAt: grokToken?.expiresAt,
-          quotaWindows: isGrokConnected ? grokWindows : undefined,
+          quotaWindows: isGrokConnected && grokWindows.length > 0 ? grokWindows : undefined,
         },
       }))
       return
