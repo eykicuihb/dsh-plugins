@@ -1,7 +1,7 @@
 /**
  * xAI Grok OAuth Adapter
  * Connects to xAI Grok models using Grok OAuth token or subscription endpoint.
- * Fully dynamic model list synchronization from remote xAI endpoint.
+ * Dynamically queries the remote xAI /v1/models API endpoint when connected.
  */
 
 import { LlmAdapter } from '@deepseek-ai/dsh-llm'
@@ -21,6 +21,12 @@ interface RemoteGrokModelMeta {
   owned_by?: string
 }
 
+const OFFICIAL_GROK_MODELS: readonly LlmModelInfo[] = [
+  { id: 'grok-2-1212', name: 'Grok-2', description: 'High-performance general reasoning and coding model' },
+  { id: 'grok-2-vision-1212', name: 'Grok-2 Vision', description: 'Multimodal image and diagram comprehension' },
+  { id: 'grok-beta', name: 'Grok Beta', description: 'Standard high-speed Grok chat model' },
+]
+
 export class GrokAdapter extends LlmAdapter {
   private readonly tokenStore: TokenStore
   private readonly quotaService?: QuotaService
@@ -38,14 +44,14 @@ export class GrokAdapter extends LlmAdapter {
     return {
       id: 'grok',
       name: 'xAI Grok (OAuth)',
-      description: 'xAI Grok frontier models dynamically synchronized via SuperGrok OAuth',
+      description: 'xAI Grok models authenticated via SuperGrok / xAI OAuth',
     }
   }
 
   public override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
     const modelsMap = new Map<string, LlmModelInfo>()
 
-    // 1. Dynamic live query to remote xAI models endpoint
+    // 1. Dynamic live query to remote xAI /models endpoint
     try {
       const token = this.tokenStore.loadToken('grok')
       const baseURL = (this.customBaseURL && this.customBaseURL.trim()) || 'https://api.x.ai/v1'
@@ -73,8 +79,8 @@ export class GrokAdapter extends LlmAdapter {
             modelsMap.set(id, {
               provider,
               id,
-              name: `xAI ${id}`,
-              description: `xAI ${id} model (Remote Synced)`,
+              name: id,
+              description: `xAI ${id} (Remote Synced)`,
             })
           }
         }
@@ -83,32 +89,25 @@ export class GrokAdapter extends LlmAdapter {
       // Ignore network errors
     }
 
-    // 2. If remote returns models, return purely the dynamic remote list
+    // 2. If remote returns models dynamically, return them directly
     if (modelsMap.size > 0) {
       return Array.from(modelsMap.values())
     }
 
-    // 3. Fallback to active dynamic cache
-    const fallbackList = [
-      { id: 'grok-3', name: 'Grok-3 (Flagship Reasoning)', description: 'xAI flagship frontier reasoning model with highest STEM, math, and code solving' },
-      { id: 'grok-3-mini', name: 'Grok-3 Mini (Fast Thinking)', description: 'High-throughput lightweight reasoning model for agile coding loops' },
-      { id: 'grok-3-deepsearch', name: 'Grok-3 DeepSearch', description: 'Autonomous multi-agent deep research and structured factual reasoning' },
-      { id: 'grok-3-vision', name: 'Grok-3 Vision (Multimodal Frontier)', description: 'Frontier multimodal comprehension for high-resolution UI, diagrams, and video' },
-    ]
-
-    return fallbackList.map(m => ({ ...m, provider }))
+    // 3. Fallback to official xAI model catalog
+    return OFFICIAL_GROK_MODELS.map(m => ({ ...m, provider }))
   }
 
   public override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
-    const isReasoning = model.startsWith('grok-3')
+    const isReasoning = model.includes('thinking') || model.includes('reasoning')
     return Promise.resolve({
       provider,
       id: model,
-      name: model,
+      name: OFFICIAL_GROK_MODELS.find(m => m.id === model)?.name || model,
       context: {
         contextWindow: 131072,
       },
-      defaultMaxTokens: 32768,
+      defaultMaxTokens: 8192,
       reasoning: isReasoning
         ? {
             efforts: [
@@ -158,10 +157,6 @@ export class GrokAdapter extends LlmAdapter {
       stream: true,
       temperature: options.temperature ?? 0.7,
       max_tokens: options.maxTokens,
-    }
-
-    if (options.reasoningEffort && model.startsWith('grok-3')) {
-      body.reasoning_effort = options.reasoningEffort
     }
 
     const response = await fetch(endpoint, {
