@@ -7,7 +7,7 @@
   "type": "module",
   "scripts": {
     "build": "pnpm -r run build",
-    "test": "pnpm -r run test"
+    "test": "vitest run"
   },
   "keywords": [
     "deepseek",
@@ -18,5 +18,11 @@
     "extensions",
     "ai-agent"
   ],
-  "author": "eykicuihb"
+  "author": "eykicuihb",
+  "devDependencies": {
+    "vitest": "^3.0.7",
+    "typescript": "^5.8.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  }
 }

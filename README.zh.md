@@ -11,6 +11,7 @@
 | 插件名称 | 目录 / 包名 | 描述 | 状态 |
 |---|---|---|---|
 | 👁️ **DeepIris (深瞳)** | [`plugins/dsh-deepiris`](./plugins/dsh-deepiris) | 为 DeepSeek 提供多 Provider VLM 视觉感知、OCR 识别与自主 UI 闭环质检能力。 | `v0.1.0` (就绪) |
+| 🔑 **OAuth Models & Quota** | [`plugins/dsh-oauth-models`](./plugins/dsh-oauth-models) | OpenAI Codex、Google Antigravity 与 xAI Grok 订阅直连与 WebUI 实时额度监控看板。 | `v0.1.0` (就绪) |
 
 ---
 
@@ -18,22 +19,34 @@
 
 ### 1. 安装插件
 
-在你的 DeepSeek Harness 项目或运行环境中安装所需插件：
+在你的 DeepSeek Harness 项目中安装所需插件：
 
 ```bash
+# 安装 DeepIris
 pnpm add @eykicuihb/dsh-deepiris
+
+# 安装 OAuth Models & Quota
+pnpm add @eykicuihb/dsh-oauth-models
 ```
 
 ### 2. 在 `cordis.patch.yml` 中挂载启用
-
-在 `~/.dsh/cordis.patch.yml` 或项目配置文件中声明挂载：
 
 ```yaml
 - id: deepiris
   name: '@eykicuihb/dsh-deepiris'
   config:
-    provider: dashscope # dashscope | zhipu | openai | anthropic | gemini | ollama | custom | opencode
-    model: qwen2.5-vl-72b-instruct
+    provider: dashscope
+
+- id: oauth-models
+  name: '@eykicuihb/dsh-oauth-models'
+  config:
+    providers:
+      codex:
+        enabled: true
+      antigravity:
+        enabled: true
+      grok:
+        enabled: true
 ```
 
 ---

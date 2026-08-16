@@ -11,6 +11,7 @@ A curated collection of community plugins, tool extensions, and capabilities for
 | Plugin | Package | Description | Status |
 |---|---|---|---|
 | 👁️ **DeepIris (深瞳)** | [`plugins/dsh-deepiris`](./plugins/dsh-deepiris) | Multi-provider VLM visual understanding, OCR, and autonomous UI testing/inspection for DeepSeek LLMs. | `v0.1.0` (Ready) |
+| 🔑 **OAuth Models & Quota** | [`plugins/dsh-oauth-models`](./plugins/dsh-oauth-models) | OpenAI Codex, Google Antigravity, and xAI Grok OAuth subscriptions bridge with live WebUI Quota Dashboard. | `v0.1.0` (Ready) |
 
 ---
 
@@ -21,20 +22,31 @@ A curated collection of community plugins, tool extensions, and capabilities for
 To install plugins into your DeepSeek Harness environment:
 
 ```bash
-# In your DeepSeek Harness project or workspace:
+# Install DeepIris
 pnpm add @eykicuihb/dsh-deepiris
+
+# Install OAuth Models
+pnpm add @eykicuihb/dsh-oauth-models
 ```
 
 ### 2. Enabling Plugins in `cordis.patch.yml`
-
-Plugins in `dsh` are declared and mounted through `cordis.patch.yml` or your profile configuration:
 
 ```yaml
 - id: deepiris
   name: '@eykicuihb/dsh-deepiris'
   config:
-    provider: dashscope # dashscope | zhipu | openai | anthropic | gemini | ollama | custom | opencode
-    model: qwen2.5-vl-72b-instruct
+    provider: dashscope
+
+- id: oauth-models
+  name: '@eykicuihb/dsh-oauth-models'
+  config:
+    providers:
+      codex:
+        enabled: true
+      antigravity:
+        enabled: true
+      grok:
+        enabled: true
 ```
 
 ---
