@@ -26,6 +26,15 @@ interface DynamicAntigravityModelMeta {
   supportsImages?: boolean
 }
 
+const WIRE_MODEL_FALLBACKS: Record<string, string> = {
+  'gemini-3.1-pro-high': 'gemini-pro-agent',
+  'gemini-3.1-pro-preview': 'gemini-pro-agent',
+  'gemini-3.5-flash-extra-low': 'gemini-3.6-flash-low',
+  'gemini-3.5-flash-low': 'gemini-3.6-flash-medium',
+  'gemini-3.5-flash-high': 'gemini-3.6-flash-high',
+  'gemini-3-flash-agent': 'gemini-3.6-flash-high',
+}
+
 export class AntigravityAdapter extends LlmAdapter {
   private readonly tokenStore: TokenStore
   private readonly quotaService?: QuotaService
@@ -56,8 +65,8 @@ export class AntigravityAdapter extends LlmAdapter {
     }
 
     const endpoints = [
-      (this.customBaseURL && this.customBaseURL.trim()) || 'https://cloudcode-pa.googleapis.com',
-      'https://daily-cloudcode-pa.googleapis.com',
+      (this.customBaseURL && this.customBaseURL.trim()) || 'https://daily-cloudcode-pa.googleapis.com',
+      'https://cloudcode-pa.googleapis.com',
     ]
 
     for (const base of endpoints) {
@@ -135,14 +144,14 @@ export class AntigravityAdapter extends LlmAdapter {
   }
 
   public override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
-    const model = options.model
+    const model = WIRE_MODEL_FALLBACKS[options.model] || options.model || 'gemini-3.6-flash-medium'
     const token = this.tokenStore.loadToken('antigravity')
     if (!token?.accessToken) {
       throw new Error('Google Antigravity OAuth token not found. Please authorize via OAuth in settings.')
     }
 
-    const base = (this.customBaseURL && this.customBaseURL.trim()) || 'https://cloudcode-pa.googleapis.com'
-    const endpoint = `${base.replace(/\/+$/, '')}/v1internal:streamGenerateContent?alt=sse`
+    const base = (this.customBaseURL && this.customBaseURL.trim()) || 'https://daily-cloudcode-pa.googleapis.com'
+    const endpoint = `${base.replace(/\/+$/, '')}/v1internal:generateContent?alt=sse`
 
     const contents = (options.messages || []).map((m: any) => {
       const role = m.role === 'assistant' ? 'model' : 'user'

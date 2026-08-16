@@ -186,7 +186,7 @@ export class CodexAdapter extends LlmAdapter {
         store: false,
       }
       if (options.reasoningEffort) {
-        body.reasoning_effort = options.reasoningEffort
+        body.reasoning = { effort: options.reasoningEffort }
       }
     }
 
