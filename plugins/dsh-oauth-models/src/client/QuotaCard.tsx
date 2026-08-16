@@ -79,6 +79,7 @@ export function QuotaCard({
       {/* Connected State Content */}
       {isConnected ? (
         <>
+          {/* Account and Tier Badges */}
           <div
             style={{
               display: 'flex',
@@ -103,45 +104,82 @@ export function QuotaCard({
             )}
           </div>
 
-          {/* Rate Limits & Request Quota Section */}
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(2, 1fr)',
-              gap: '8px',
-              padding: '10px 12px',
-              borderRadius: '8px',
-              backgroundColor: '#13161f',
-              border: '1px solid rgba(255, 255, 255, 0.04)',
-              fontSize: '0.8rem',
-            }}
-          >
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-              <span style={{ color: '#64748b' }}>每分钟请求限额 (RPM):</span>
-              <strong style={{ color: '#f1f5f9', fontSize: '0.9rem' }}>
-                {metrics.rateLimits?.rpmLimit ? `${metrics.rateLimits.rpmLimit} req/min` : '无硬性限制'}
-              </strong>
+          {/* 通用使用限额 (General Usage Windows - Weekly / 5-Hour Limit) */}
+          {metrics.quotaWindows && metrics.quotaWindows.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <span style={{ fontSize: '0.85rem', fontWeight: 600, color: '#f1f5f9' }}>
+                通用使用限额
+              </span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {metrics.quotaWindows.map((w) => {
+                  const pct = Math.max(0, Math.min(100, w.remainingPercentage))
+                  return (
+                    <div
+                      key={w.id}
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        padding: '12px 16px',
+                        borderRadius: '10px',
+                        backgroundColor: '#13161f',
+                        border: '1px solid rgba(255, 255, 255, 0.06)',
+                      }}
+                    >
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                        <span style={{ fontSize: '0.86rem', fontWeight: 500, color: '#f8fafc' }}>
+                          {w.label}
+                        </span>
+                        {w.resetTimeFormatted && (
+                          <span style={{ fontSize: '0.76rem', color: '#94a3b8' }}>
+                            重置时间: {w.resetTimeFormatted}
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        {/* Pill Progress Bar */}
+                        <div
+                          style={{
+                            width: '110px',
+                            height: '6px',
+                            borderRadius: '9999px',
+                            backgroundColor: 'rgba(255, 255, 255, 0.12)',
+                            overflow: 'hidden',
+                          }}
+                        >
+                          <div
+                            style={{
+                              width: `${pct}%`,
+                              height: '100%',
+                              borderRadius: '9999px',
+                              backgroundColor: '#e2e8f0',
+                              transition: 'width 0.3s ease',
+                            }}
+                          />
+                        </div>
+                        <span style={{ fontSize: '0.82rem', fontWeight: 600, color: '#f1f5f9', minWidth: '55px', textAlign: 'right' }}>
+                          剩余 {pct}%
+                        </span>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-              <span style={{ color: '#64748b' }}>每分钟 Token 限额 (TPM):</span>
-              <strong style={{ color: '#f1f5f9', fontSize: '0.9rem' }}>
-                {metrics.rateLimits?.tpmLimit ? `${(metrics.rateLimits.tpmLimit / 1000).toLocaleString()}k token/min` : '按订阅动态扩展'}
-              </strong>
-            </div>
-          </div>
+          )}
 
           {/* Model Specific Live Quota Breakdown */}
           {metrics.modelQuotas && metrics.modelQuotas.length > 0 && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#cbd5e1' }}>
-                模型实时余量 (Live Model Quotas):
+              <span style={{ fontSize: '0.82rem', fontWeight: 600, color: '#cbd5e1' }}>
+                模型分项实时余量:
               </span>
               <div
                 style={{
                   display: 'flex',
                   flexDirection: 'column',
                   gap: '6px',
-                  maxHeight: '160px',
+                  maxHeight: '140px',
                   overflowY: 'auto',
                   paddingRight: '4px',
                 }}
@@ -183,11 +221,6 @@ export function QuotaCard({
                           }}
                         />
                       </div>
-                      {mq.resetTime && (
-                        <span style={{ fontSize: '0.7rem', color: '#64748b' }}>
-                          重置时间: {new Date(mq.resetTime).toLocaleTimeString()}
-                        </span>
-                      )}
                     </div>
                   )
                 })}
@@ -257,7 +290,7 @@ export function QuotaCard({
               未连接 OAuth 账号
             </span>
             <span style={{ fontSize: '0.78rem', color: '#94a3b8' }}>
-              登录后即可零 API 费用直连订阅模型并实时查看配额与思考链
+              登录后即可零 API 费用直连订阅模型并实时查看周限额与思考链
             </span>
           </div>
           <button

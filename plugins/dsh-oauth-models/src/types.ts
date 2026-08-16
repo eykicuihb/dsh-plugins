@@ -21,6 +21,15 @@ export interface OAuthTokenData {
   updatedAt: number
 }
 
+/** Specific Quota Window (e.g. 每周使用限额, 5小时周期限额) */
+export interface QuotaWindowDetail {
+  id: string
+  label: string
+  remainingPercentage: number
+  resetTimeFormatted?: string
+  resetAt?: number
+}
+
 /** Specific Model Quota breakdown (e.g. Gemini 3.6 Flash vs Claude Sonnet 4.6) */
 export interface ModelQuotaDetail {
   modelId: string
@@ -36,6 +45,11 @@ export interface QuotaMetrics {
   accountEmail?: string
   accountName?: string
   subscriptionTier?: string
+
+  /** Usage windows (Weekly limit, 5-hour limit, etc.) */
+  quotaWindows?: QuotaWindowDetail[]
+
+  /** Detailed Model breakdown */
   modelQuotas?: ModelQuotaDetail[]
 
   /** Requests remaining in the primary quota window */

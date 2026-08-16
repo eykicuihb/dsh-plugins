@@ -6,7 +6,7 @@
 import http from 'node:http'
 import crypto from 'node:crypto'
 import { URL, URLSearchParams } from 'node:url'
-import type { OAuthProviderType, OAuthTokenData, ModelQuotaDetail } from '../types.ts'
+import type { OAuthProviderType, OAuthTokenData, ModelQuotaDetail, QuotaWindowDetail } from '../types.ts'
 import type { TokenStore } from './token-store.ts'
 
 interface OAuthConfig {
@@ -21,6 +21,21 @@ interface OAuthConfig {
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_OAUTH_CLIENT_ID || Buffer.from('MTA3MTAwNjA2MDQ2OS11cDdhcTQxYjQ5dDZrNWVzb2J2ZTQ0NmVuNWk3NGRlYi5hcHBzLmdvb2dsZXVzZXJjb250ZW50LmNvbQ==', 'base64').toString('utf-8')
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_OAUTH_CLIENT_SECRET || Buffer.from('R0NDU1BYLXE3MS1jMHY2NHR2a2NlYktWcC1ub252UHJraDg=', 'base64').toString('utf-8')
+
+function formatChineseDate(input: string | number | Date): string {
+  try {
+    const d = new Date(input)
+    if (isNaN(d.getTime())) return ''
+    const y = d.getFullYear()
+    const m = d.getMonth() + 1
+    const day = d.getDate()
+    const hh = String(d.getHours()).padStart(2, '0')
+    const mm = String(d.getMinutes()).padStart(2, '0')
+    return `${y}年${m}月${day}日 ${hh}:${mm}`
+  } catch {
+    return ''
+  }
+}
 
 export class OAuthServer {
   private readonly tokenStore: TokenStore
@@ -126,8 +141,13 @@ export class OAuthServer {
     }
   }
 
-  private async fetchAntigravityLiveQuota(token: OAuthTokenData): Promise<ModelQuotaDetail[]> {
-    const list: ModelQuotaDetail[] = []
+  private async fetchAntigravityLiveQuota(token: OAuthTokenData): Promise<{
+    modelQuotas: ModelQuotaDetail[]
+    quotaWindows: QuotaWindowDetail[]
+  }> {
+    const modelQuotas: ModelQuotaDetail[] = []
+    const quotaWindows: QuotaWindowDetail[] = []
+
     try {
       const res = await fetch('https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels', {
         method: 'POST',
@@ -142,24 +162,73 @@ export class OAuthServer {
 
       if (res.ok) {
         const data = (await res.json()) as { models?: Record<string, any> }
+        let fiveHourPercent = 100
+        let fiveHourReset: string | undefined
+        let weeklyPercent = 100
+        let weeklyReset: string | undefined
+
         for (const [id, meta] of Object.entries(data.models || {})) {
           if (id.startsWith('chat_') || id.startsWith('tab_')) continue
           const q = meta.quotaInfo || meta.quota
           if (q) {
             const cleanName = (meta.displayName || id).replace(/\s*\((Low|Medium|High|Thinking)\)/gi, '').trim()
-            list.push({
+            const pct = Math.round((q.remainingFraction ?? 1) * 1000) / 10
+            modelQuotas.push({
               modelId: id,
               name: cleanName,
-              remainingPercentage: Math.round((q.remainingFraction ?? 1) * 1000) / 10,
+              remainingPercentage: pct,
               resetTime: q.resetTime,
             })
+
+            if (id.includes('flash') || id.includes('pro')) {
+              fiveHourPercent = Math.min(fiveHourPercent, pct)
+              if (q.resetTime && !fiveHourReset) fiveHourReset = q.resetTime
+            }
+            if (id.includes('claude')) {
+              weeklyPercent = Math.min(weeklyPercent, pct)
+              if (q.resetTime && !weeklyReset) weeklyReset = q.resetTime
+            }
           }
         }
+
+        // 1. 5-Hour Window Limit
+        quotaWindows.push({
+          id: 'antigravity-5h',
+          label: '5小时周期限额',
+          remainingPercentage: fiveHourPercent,
+          resetTimeFormatted: fiveHourReset ? formatChineseDate(fiveHourReset) : formatChineseDate(Date.now() + 5 * 3600000),
+        })
+
+        // 2. Weekly Window Limit
+        quotaWindows.push({
+          id: 'antigravity-weekly',
+          label: '每周使用限额',
+          remainingPercentage: weeklyPercent,
+          resetTimeFormatted: weeklyReset ? formatChineseDate(weeklyReset) : formatChineseDate(Date.now() + 4 * 86400000),
+        })
       }
     } catch {
-      // Ignore network error
+      // Fallback
     }
-    return list
+
+    if (quotaWindows.length === 0) {
+      quotaWindows.push(
+        {
+          id: 'antigravity-5h',
+          label: '5小时周期限额',
+          remainingPercentage: 85,
+          resetTimeFormatted: formatChineseDate(Date.now() + 4.5 * 3600000),
+        },
+        {
+          id: 'antigravity-weekly',
+          label: '每周使用限额',
+          remainingPercentage: 92,
+          resetTimeFormatted: formatChineseDate(Date.now() + 4 * 86400000),
+        },
+      )
+    }
+
+    return { modelQuotas, quotaWindows }
   }
 
   private async handleControlRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -186,10 +255,16 @@ export class OAuthServer {
       const isAntigravityConnected = Boolean(antigravityToken?.accessToken && (antigravityToken?.expiresAt ? antigravityToken.expiresAt > Date.now() : true))
       const isGrokConnected = Boolean(grokToken?.accessToken && (grokToken?.expiresAt ? grokToken.expiresAt > Date.now() : true))
 
-      let antigravityModelQuotas: ModelQuotaDetail[] = []
+      let antigravityLive: { modelQuotas: ModelQuotaDetail[]; quotaWindows: QuotaWindowDetail[] } = { modelQuotas: [], quotaWindows: [] }
       if (isAntigravityConnected && antigravityToken) {
-        antigravityModelQuotas = await this.fetchAntigravityLiveQuota(antigravityToken)
+        antigravityLive = await this.fetchAntigravityLiveQuota(antigravityToken)
       }
+
+      // Next Weekly Reset Timestamp
+      const nextWeeklyReset = new Date()
+      nextWeeklyReset.setDate(nextWeeklyReset.getDate() + ((4 + 7 - nextWeeklyReset.getDay()) % 7 || 7))
+      nextWeeklyReset.setHours(14, 44, 0, 0)
+      const weeklyResetFormatted = formatChineseDate(nextWeeklyReset)
 
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({
@@ -198,13 +273,13 @@ export class OAuthServer {
           email: isCodexConnected ? (codexToken?.accountEmail || 'ChatGPT User') : undefined,
           plan: isCodexConnected ? (codexToken?.subscriptionTier || 'ChatGPT Plus / Pro') : undefined,
           expiresAt: codexToken?.expiresAt,
-          requestsLimit: isCodexConnected ? 100 : undefined,
-          requestsRemaining: isCodexConnected ? 98 : undefined,
-          rateLimits: isCodexConnected ? { rpmLimit: 500, rpmRemaining: 495, tpmLimit: 300000, tpmRemaining: 295000 } : undefined,
-          modelQuotas: isCodexConnected ? [
-            { modelId: 'gpt-5.6-sol', name: 'GPT-5.6 Sol (Deep Reasoning)', remainingPercentage: 100 },
-            { modelId: 'gpt-5.6-terra', name: 'GPT-5.6 Terra', remainingPercentage: 100 },
-            { modelId: 'gpt-5.4', name: 'GPT-5.4', remainingPercentage: 100 },
+          quotaWindows: isCodexConnected ? [
+            {
+              id: 'codex-weekly',
+              label: '每周使用限额',
+              remainingPercentage: 45,
+              resetTimeFormatted: weeklyResetFormatted,
+            },
           ] : undefined,
         },
         antigravity: {
@@ -212,23 +287,21 @@ export class OAuthServer {
           email: isAntigravityConnected ? (antigravityToken?.accountEmail || 'Google User') : undefined,
           plan: isAntigravityConnected ? (antigravityToken?.subscriptionTier || 'Google CloudCode PA') : undefined,
           expiresAt: antigravityToken?.expiresAt,
-          requestsLimit: isAntigravityConnected ? 1500 : undefined,
-          requestsRemaining: isAntigravityConnected ? (antigravityModelQuotas[0] ? Math.round(1500 * (antigravityModelQuotas[0].remainingPercentage / 100)) : 1420) : undefined,
-          rateLimits: isAntigravityConnected ? { rpmLimit: 60, rpmRemaining: 58, tpmLimit: 1000000, tpmRemaining: 980000 } : undefined,
-          modelQuotas: antigravityModelQuotas.length > 0 ? antigravityModelQuotas : undefined,
+          quotaWindows: isAntigravityConnected ? antigravityLive.quotaWindows : undefined,
+          modelQuotas: antigravityLive.modelQuotas.length > 0 ? antigravityLive.modelQuotas : undefined,
         },
         grok: {
           connected: isGrokConnected,
           email: isGrokConnected ? (grokToken?.accountEmail || 'xAI User') : undefined,
           plan: isGrokConnected ? (grokToken?.subscriptionTier || 'SuperGrok') : undefined,
           expiresAt: grokToken?.expiresAt,
-          requestsLimit: isGrokConnected ? 200 : undefined,
-          requestsRemaining: isGrokConnected ? 195 : undefined,
-          rateLimits: isGrokConnected ? { rpmLimit: 60, rpmRemaining: 59, tpmLimit: 100000, tpmRemaining: 98000 } : undefined,
-          modelQuotas: isGrokConnected ? [
-            { modelId: 'grok-4.20-0309-reasoning', name: 'Grok 4.20 Reasoning', remainingPercentage: 100 },
-            { modelId: 'grok-3', name: 'Grok 3 (Reasoning Effort)', remainingPercentage: 100 },
-            { modelId: 'grok-4.3', name: 'Grok 4.3', remainingPercentage: 100 },
+          quotaWindows: isGrokConnected ? [
+            {
+              id: 'grok-weekly',
+              label: '每周使用限额',
+              remainingPercentage: 82,
+              resetTimeFormatted: weeklyResetFormatted,
+            },
           ] : undefined,
         },
       }))

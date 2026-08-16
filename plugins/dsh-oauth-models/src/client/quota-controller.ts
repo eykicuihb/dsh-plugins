@@ -67,9 +67,7 @@ export class QuotaController {
               accountEmail: info.email,
               subscriptionTier: info.plan || (p === 'codex' ? 'ChatGPT Plus / Pro' : p === 'antigravity' ? 'Google CloudCode PA' : 'SuperGrok'),
               tokenExpiresAt: info.expiresAt,
-              requestsLimit: info.requestsLimit,
-              requestsRemaining: info.requestsRemaining,
-              rateLimits: info.rateLimits,
+              quotaWindows: info.quotaWindows,
               modelQuotas: info.modelQuotas,
               lastUpdated: now,
             })
