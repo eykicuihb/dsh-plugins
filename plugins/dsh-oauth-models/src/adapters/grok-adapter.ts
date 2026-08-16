@@ -94,6 +94,12 @@ export class GrokAdapter extends LlmAdapter {
 
   public override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
     const meta = this.dynamicModels.get(model)
+    const isReasoningModel = model.includes('reasoning')
+      || model.includes('think')
+      || model.includes('grok-3')
+      || model.includes('grok-4')
+      || !model.includes('non-reasoning')
+
     const contextWindow = meta?.contextWindow || 131072
     const maxTokens = meta?.maxTokens || 65536
 
@@ -105,7 +111,16 @@ export class GrokAdapter extends LlmAdapter {
         contextWindow: Number.isInteger(contextWindow) && contextWindow > 0 ? contextWindow : 131072,
       },
       defaultMaxTokens: Number.isInteger(maxTokens) && maxTokens > 0 ? maxTokens : 65536,
-      reasoning: undefined,
+      reasoning: isReasoningModel
+        ? {
+            efforts: [
+              { id: 'low', name: 'Low' },
+              { id: 'medium', name: 'Medium' },
+              { id: 'high', name: 'High' },
+            ],
+            defaultEffort: 'medium',
+          }
+        : undefined,
     })
   }
 
@@ -145,7 +160,7 @@ export class GrokAdapter extends LlmAdapter {
       max_tokens: options.maxTokens,
     }
 
-    if (options.reasoningEffort && options.reasoningEffort !== 'off') {
+    if (options.reasoningEffort && options.reasoningEffort !== 'off' && !model.includes('0309-reasoning')) {
       body.reasoning_effort = options.reasoningEffort
     }
 
