@@ -23,18 +23,9 @@ export { GrokAdapter } from './adapters/grok-adapter.ts'
 export const name = 'oauth-models'
 export const inject = ['llm']
 
-declare module '@deepseek-ai/cordis' {
-  interface Context {
-    oauthQuota?: QuotaService
-  }
-}
-
 export function apply(ctx: Context, config: OAuthPluginConfig = {}): void {
   const tokenStore = new TokenStore()
   const quotaService = new QuotaService(tokenStore)
-
-  // Attach QuotaService to context
-  ctx.oauthQuota = quotaService
 
   const codexConfig = config.providers?.codex
   const antigravityConfig = config.providers?.antigravity
