@@ -23,6 +23,12 @@ export class QuotaController {
 
   constructor() {
     this.syncFromBackend()
+    // Poll every 30 seconds for live updates
+    if (typeof window !== 'undefined') {
+      this.pollingTimer = setInterval(() => {
+        this.syncFromBackend()
+      }, 30000)
+    }
   }
 
   public getState(): QuotaControllerState {
@@ -59,12 +65,12 @@ export class QuotaController {
               provider: p,
               status: 'connected',
               accountEmail: info.email,
-              subscriptionTier: p === 'codex' ? 'ChatGPT Plus / Pro' : p === 'antigravity' ? 'Google CloudCode PA' : 'SuperGrok',
+              subscriptionTier: info.plan || (p === 'codex' ? 'ChatGPT Plus / Pro' : p === 'antigravity' ? 'Google CloudCode PA' : 'SuperGrok'),
               tokenExpiresAt: info.expiresAt,
-              requestsLimit: 100,
-              requestsRemaining: 95,
-              tokensLimit: 2000000,
-              tokensRemaining: 1850000,
+              requestsLimit: info.requestsLimit,
+              requestsRemaining: info.requestsRemaining,
+              rateLimits: info.rateLimits,
+              modelQuotas: info.modelQuotas,
               lastUpdated: now,
             })
           } else {
@@ -98,43 +104,27 @@ export class QuotaController {
         window.open(authUrl, '_blank')
       }
 
-      // Start polling for authorization completion
-      if (this.pollingTimer) clearInterval(this.pollingTimer)
+      // Poll until connected
       let attempts = 0
-      this.pollingTimer = setInterval(async () => {
+      const poll = setInterval(async () => {
         attempts++
-        if (attempts > 80) {
-          clearInterval(this.pollingTimer)
+        await this.syncFromBackend()
+        const current = this.state.metrics.get(provider)
+        if (current?.status === 'connected' || attempts > 60) {
+          clearInterval(poll)
           this.state.isLoggingIn = null
           this.emit()
-          return
-        }
-
-        try {
-          const statusRes = await fetch(`${CONTROL_SERVER_URL}/oauth/status`)
-          if (statusRes.ok) {
-            const data = await statusRes.json()
-            if (data[provider]?.connected) {
-              clearInterval(this.pollingTimer)
-              this.state.isLoggingIn = null
-              await this.syncFromBackend()
-            }
-          }
-        } catch {
-          // Ignore polling errors
         }
       }, 1500)
-    } catch (err) {
+    } catch {
       this.state.isLoggingIn = null
       this.emit()
-      alert(`OAuth Login Failed: ${(err as Error).message}`)
     }
   }
 
-  public async refreshAll(): Promise<void> {
+  public async refreshProvider(provider: OAuthProviderType): Promise<void> {
     this.state.isRefreshing = true
     this.emit()
-
     try {
       await this.syncFromBackend()
     } finally {
@@ -143,13 +133,21 @@ export class QuotaController {
     }
   }
 
-  public async refreshProvider(provider: OAuthProviderType): Promise<void> {
-    await this.syncFromBackend()
+  public async refreshAll(): Promise<void> {
+    this.state.isRefreshing = true
+    this.emit()
+    try {
+      await this.syncFromBackend()
+    } finally {
+      this.state.isRefreshing = false
+      this.state.lastRefreshTime = Date.now()
+      this.emit()
+    }
   }
 
   public async disconnect(provider: OAuthProviderType): Promise<void> {
     try {
-      await fetch(`${CONTROL_SERVER_URL}/oauth/logout?provider=${provider}`, { method: 'POST' })
+      await fetch(`${CONTROL_SERVER_URL}/oauth/disconnect?provider=${provider}`, { method: 'POST' })
       this.state.metrics.set(provider, {
         provider,
         status: 'unauthorized',

@@ -83,7 +83,7 @@ export function QuotaCard({
             style={{
               display: 'flex',
               flexDirection: 'column',
-              gap: '8px',
+              gap: '6px',
               padding: '12px 14px',
               borderRadius: '8px',
               backgroundColor: '#1e2330',
@@ -97,13 +97,40 @@ export function QuotaCard({
             </div>
             {metrics.subscriptionTier && (
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: '#94a3b8' }}>订阅套餐 (Tier):</span>
+                <span style={{ color: '#94a3b8' }}>订阅套餐 (Plan):</span>
                 <strong style={{ color: '#a78bfa' }}>{metrics.subscriptionTier}</strong>
               </div>
             )}
           </div>
 
-          {/* Model Specific Quota Meters */}
+          {/* Rate Limits & Request Quota Section */}
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(2, 1fr)',
+              gap: '8px',
+              padding: '10px 12px',
+              borderRadius: '8px',
+              backgroundColor: '#13161f',
+              border: '1px solid rgba(255, 255, 255, 0.04)',
+              fontSize: '0.8rem',
+            }}
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+              <span style={{ color: '#64748b' }}>每分钟请求限额 (RPM):</span>
+              <strong style={{ color: '#f1f5f9', fontSize: '0.9rem' }}>
+                {metrics.rateLimits?.rpmLimit ? `${metrics.rateLimits.rpmLimit} req/min` : '无硬性限制'}
+              </strong>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+              <span style={{ color: '#64748b' }}>每分钟 Token 限额 (TPM):</span>
+              <strong style={{ color: '#f1f5f9', fontSize: '0.9rem' }}>
+                {metrics.rateLimits?.tpmLimit ? `${(metrics.rateLimits.tpmLimit / 1000).toLocaleString()}k token/min` : '按订阅动态扩展'}
+              </strong>
+            </div>
+          </div>
+
+          {/* Model Specific Live Quota Breakdown */}
           {metrics.modelQuotas && metrics.modelQuotas.length > 0 && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#cbd5e1' }}>
@@ -114,7 +141,7 @@ export function QuotaCard({
                   display: 'flex',
                   flexDirection: 'column',
                   gap: '6px',
-                  maxHeight: '180px',
+                  maxHeight: '160px',
                   overflowY: 'auto',
                   paddingRight: '4px',
                 }}
@@ -169,7 +196,7 @@ export function QuotaCard({
           )}
 
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 'auto', paddingTop: '8px' }}>
-            <span style={{ fontSize: '0.8rem', color: '#10b981', display: 'flex', alignItems: 'center', gap: '4px' }}>
+            <span style={{ fontSize: '0.78rem', color: '#10b981', display: 'flex', alignItems: 'center', gap: '4px' }}>
               ✨ 动态模型目录与思考链已同步
             </span>
             <div style={{ display: 'flex', gap: '8px' }}>
