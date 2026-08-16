@@ -237,8 +237,8 @@ export class CardForm<T> {
     const snapshot = this.scope.getSnapshot()
     const plan = this.plan()
     return {
-      available: snapshot.status === 'ready',
-      writable: snapshot.writable,
+      available: snapshot.status !== 'unavailable',
+      writable: snapshot.writable ?? true,
       dirty: plan.length > 0,
       invalid: plan.some(item => item.run === undefined),
       saving: this.saving,
