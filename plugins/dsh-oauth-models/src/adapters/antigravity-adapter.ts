@@ -1,5 +1,5 @@
 /**
- * Google Antigravity (Gemini) OAuth Adapter
+ * Google Antigravity (Gemini & Claude) OAuth Adapter
  * Connects to Google Cloud Code Assist / Antigravity OAuth API.
  * 100% dynamically synchronizes model list from remote Google Antigravity PA endpoint.
  */
@@ -118,9 +118,42 @@ export class AntigravityAdapter extends LlmAdapter {
 
   public override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
     const meta = this.dynamicModels.get(model)
-    const isThinking = meta?.supportsThinking || model.includes('thinking') || model.includes('pro')
-    const contextWindow = meta?.inputTokenLimit || 1048576
+    const isClaude = /claude/i.test(model)
+    const isThinking = meta?.supportsThinking
+      || isClaude
+      || model.includes('thinking')
+      || model.includes('pro')
+      || model.includes('3.6-flash')
+      || model.includes('2.5')
+
+    const contextWindow = meta?.inputTokenLimit || (isClaude ? 250000 : 1048576)
     const maxTokens = meta?.outputTokenLimit || 65535
+
+    let efforts: Array<{ id: string; name?: string; description?: string }> | undefined
+    let defaultEffort = 'medium'
+
+    if (isClaude) {
+      efforts = [
+        { id: 'low', name: 'Low' },
+        { id: 'medium', name: 'Medium' },
+        { id: 'high', name: 'High' },
+        { id: 'max', name: 'Max' },
+      ]
+      defaultEffort = 'high'
+    } else if (model.includes('3.1-pro')) {
+      efforts = [
+        { id: 'low', name: 'Low' },
+        { id: 'high', name: 'High' },
+      ]
+      defaultEffort = 'high'
+    } else if (isThinking) {
+      efforts = [
+        { id: 'low', name: 'Low' },
+        { id: 'medium', name: 'Medium' },
+        { id: 'high', name: 'High' },
+      ]
+      defaultEffort = 'medium'
+    }
 
     return Promise.resolve({
       provider,
@@ -130,21 +163,28 @@ export class AntigravityAdapter extends LlmAdapter {
         contextWindow: Number.isInteger(contextWindow) && contextWindow > 0 ? contextWindow : 1048576,
       },
       defaultMaxTokens: Number.isInteger(maxTokens) && maxTokens > 0 ? maxTokens : 65535,
-      reasoning: isThinking
+      reasoning: isThinking && efforts
         ? {
-            efforts: [
-              { id: 'low', name: 'Low' },
-              { id: 'medium', name: 'Medium' },
-              { id: 'high', name: 'High' },
-            ],
-            defaultEffort: 'medium',
+            efforts,
+            defaultEffort,
           }
         : undefined,
     })
   }
 
   public override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
-    const model = WIRE_MODEL_FALLBACKS[options.model] || options.model || 'gemini-3.6-flash-medium'
+    let wireModel = options.model
+    if (options.model === 'gemini-3.6-flash') {
+      if (options.reasoningEffort === 'low') wireModel = 'gemini-3.6-flash-low'
+      else if (options.reasoningEffort === 'high') wireModel = 'gemini-3.6-flash-high'
+      else wireModel = 'gemini-3.6-flash-medium'
+    } else if (options.model === 'gemini-3.1-pro') {
+      if (options.reasoningEffort === 'low') wireModel = 'gemini-3.1-pro-low'
+      else wireModel = 'gemini-pro-agent'
+    } else if (WIRE_MODEL_FALLBACKS[options.model]) {
+      wireModel = WIRE_MODEL_FALLBACKS[options.model]
+    }
+
     const token = this.tokenStore.loadToken('antigravity')
     if (!token?.accessToken) {
       throw new Error('Google Antigravity OAuth token not found. Please authorize via OAuth in settings.')
@@ -176,18 +216,28 @@ export class AntigravityAdapter extends LlmAdapter {
       return { role, parts: [{ text: String(m.content || '') }] }
     })
 
+    const generationConfig: Record<string, any> = {
+      temperature: options.temperature ?? 0.7,
+      maxOutputTokens: options.maxTokens,
+    }
+
+    if (/claude/i.test(wireModel) || wireModel.includes('thinking') || wireModel.includes('2.5-pro')) {
+      if (options.reasoningEffort && options.reasoningEffort !== 'off') {
+        const eff = options.reasoningEffort
+        const thinkingLevel = (eff === 'max' || eff === 'ultra' || eff === 'xhigh') ? 'high' : eff
+        generationConfig.thinkingConfig = { thinkingLevel }
+      }
+    }
+
     const body = {
       project: token.accountId || '',
-      model,
+      model: wireModel,
       userAgent: 'antigravity',
       requestType: 'agent',
       requestId: `agent-${crypto.randomUUID()}`,
       request: {
         contents,
-        generationConfig: {
-          temperature: options.temperature ?? 0.7,
-          maxOutputTokens: options.maxTokens,
-        },
+        generationConfig,
       },
     }
 

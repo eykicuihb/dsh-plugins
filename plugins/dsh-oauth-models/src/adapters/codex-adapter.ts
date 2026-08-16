@@ -137,6 +137,10 @@ export class CodexAdapter extends LlmAdapter {
       throw new Error('OpenAI Codex OAuth token not found. Please authorize via OAuth in settings.')
     }
 
+    const meta = this.dynamicModels.get(model)
+    const isReasoning = Boolean(meta?.supportedReasoningLevels && meta.supportedReasoningLevels.length > 0)
+      || model.startsWith('o1') || model.startsWith('o3') || model.startsWith('gpt-5')
+
     const isCustomUrl = Boolean(this.customBaseURL && this.customBaseURL.trim())
     const endpoint = isCustomUrl
       ? `${this.customBaseURL!.trim().replace(/\/+$/, '')}/chat/completions`
@@ -186,7 +190,7 @@ export class CodexAdapter extends LlmAdapter {
         stream: true,
         store: false,
       }
-      if (options.reasoningEffort) {
+      if (options.reasoningEffort && options.reasoningEffort !== 'off' && isReasoning) {
         body.reasoning = { effort: options.reasoningEffort }
       }
     }
