@@ -3,15 +3,10 @@
  * disclosing that plugin's controls in place, with the save that writes them.
  */
 
-import { useState, type ReactNode } from 'react'
+import React, { useState, type ReactNode } from 'react'
 import { IconChevronDownOutline14 } from '@deepseek-ai/dsh-client-ui-primitives'
-
-function clsx(...args: unknown[]): string {
-  return args.filter(Boolean).join(' ')
-}
 import type { CardShell } from './card-form.ts'
 import type { PluginsSettingsLocaleKey } from './locales.ts'
-import css from './PluginCard.module.css'
 
 /** Card chrome shared by every plugin section. */
 export interface PluginCardProps {
@@ -45,7 +40,7 @@ const FALLBACK_LABELS: Record<string, string> = {
 }
 
 /**
- * Render one plugin card.
+ * Render one plugin card matching the DSH native card design.
  */
 export function PluginCard(props: PluginCardProps) {
   const [open, setOpen] = useState(false)
@@ -66,31 +61,31 @@ export function PluginCard(props: PluginCardProps) {
   const blocked = !state.dirty || state.invalid || state.saving
 
   return (
-    <li className={clsx(css.card, open && css.cardOpen)}>
+    <li className={`dsh-deepiris-card ${open ? 'open' : ''}`}>
       <button
         type="button"
-        className={css.header}
+        className="dsh-deepiris-header"
         aria-expanded={open}
         aria-label={`${translate(open ? 'collapse' : 'expand')}: ${title}`}
         onClick={() => { setOpen(!open) }}
       >
-        <span className={css.headText}>
-          <span className={css.name}>{title}</span>
-          <span className={css.description}>{description}</span>
+        <span className="dsh-deepiris-headText">
+          <span className="dsh-deepiris-name">{title}</span>
+          <span className="dsh-deepiris-description">{description}</span>
         </span>
-        {state.dirty ? <span className={css.pending}>{translate('unsaved')}</span> : null}
-        <IconChevronDownOutline14 className={clsx(css.chevron, open && css.chevronOpen)} />
+        {state.dirty ? <span className="dsh-deepiris-pending">{translate('unsaved')}</span> : null}
+        <IconChevronDownOutline14 className={`dsh-deepiris-chevron ${open ? 'open' : ''}`} />
       </button>
       {open
         ? (
-          <div className={css.body}>
-            {!state.writable ? <p className={css.readOnly} role="status">{translate('readOnly')}</p> : null}
+          <div className="dsh-deepiris-body">
+            {!state.writable ? <p className="dsh-deepiris-readOnly" role="status">{translate('readOnly')}</p> : null}
             {props.children}
-            <div className={css.footer}>
-              {state.failed ? <p className={css.failed} role="status">{translate('saveFailed')}</p> : null}
+            <div className="dsh-deepiris-footer">
+              {state.failed ? <p className="dsh-deepiris-failed" role="status">{translate('saveFailed')}</p> : null}
               <button
                 type="button"
-                className={css.discard}
+                className="dsh-deepiris-discard"
                 disabled={!state.dirty || state.saving}
                 onClick={props.onDiscard}
               >
@@ -98,7 +93,7 @@ export function PluginCard(props: PluginCardProps) {
               </button>
               <button
                 type="button"
-                className={css.save}
+                className="dsh-deepiris-save"
                 disabled={blocked}
                 onClick={props.onSave}
               >

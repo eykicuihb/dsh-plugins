@@ -41,8 +41,52 @@ export class CodexAdapter extends LlmAdapter {
     }
   }
 
-  public override listModels(provider: string): Promise<readonly LlmModelInfo[]> {
-    return Promise.resolve(this.knownModels.map(m => ({ ...m, provider })))
+  public override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
+    const modelsMap = new Map<string, LlmModelInfo>()
+
+    // 1. Preload curated frontier models (ensuring optimal display order)
+    for (const m of this.knownModels) {
+      modelsMap.set(m.id, { ...m, provider })
+    }
+
+    // 2. Synchronize dynamically with live OpenAI models endpoint
+    try {
+      const token = this.tokenStore.loadToken('codex')
+      if (token?.accessToken) {
+        const baseURL = (this.customBaseURL && this.customBaseURL.trim()) || 'https://api.openai.com/v1'
+        const controller = new AbortController()
+        const timer = setTimeout(() => controller.abort(), 3500)
+        const res = await fetch(`${baseURL.replace(/\/+$/, '')}/models`, {
+          headers: { Authorization: `Bearer ${token.accessToken}` },
+          signal: controller.signal,
+        })
+        clearTimeout(timer)
+
+        if (res.ok) {
+          const data = (await res.json()) as { data?: Array<{ id: string }> }
+          for (const item of data?.data || []) {
+            const id = item.id
+            if (
+              (id.startsWith('gpt-4') || id.startsWith('o1') || id.startsWith('o3') || id.startsWith('chatgpt') || id.includes('codex'))
+              && !id.includes('realtime') && !id.includes('audio') && !id.includes('transcription') && !id.includes('embedding')
+            ) {
+              if (!modelsMap.has(id)) {
+                modelsMap.set(id, {
+                  provider,
+                  id,
+                  name: `OpenAI ${id}`,
+                  description: `OpenAI ${id} model (Live synced)`,
+                })
+              }
+            }
+          }
+        }
+      }
+    } catch {
+      // Fallback gracefully to curated knownModels
+    }
+
+    return Array.from(modelsMap.values())
   }
 
   public override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {

@@ -40,8 +40,48 @@ export class AntigravityAdapter extends LlmAdapter {
     }
   }
 
-  public override listModels(provider: string): Promise<readonly LlmModelInfo[]> {
-    return Promise.resolve(this.knownModels.map(m => ({ ...m, provider })))
+  public override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
+    const modelsMap = new Map<string, LlmModelInfo>()
+
+    // 1. Preload curated frontier Gemini 2.5 / 2.0 models (ensuring optimal display order)
+    for (const m of this.knownModels) {
+      modelsMap.set(m.id, { ...m, provider })
+    }
+
+    // 2. Synchronize dynamically if connected
+    try {
+      const token = this.tokenStore.loadToken('antigravity')
+      if (token?.accessToken) {
+        const baseURL = (this.customBaseURL && this.customBaseURL.trim()) || 'https://generativelanguage.googleapis.com/v1beta'
+        const controller = new AbortController()
+        const timer = setTimeout(() => controller.abort(), 3500)
+        const res = await fetch(`${baseURL.replace(/\/+$/, '')}/models?key=${token.accessToken}`, {
+          signal: controller.signal,
+        })
+        clearTimeout(timer)
+
+        if (res.ok) {
+          const data = (await res.json()) as { models?: Array<{ name: string; displayName?: string; description?: string }> }
+          for (const item of data?.models || []) {
+            const id = item.name.replace(/^models\//, '')
+            if (id.startsWith('gemini')) {
+              if (!modelsMap.has(id)) {
+                modelsMap.set(id, {
+                  provider,
+                  id,
+                  name: item.displayName || `Gemini ${id}`,
+                  description: item.description || `Google ${id} (Live synced)`,
+                })
+              }
+            }
+          }
+        }
+      }
+    } catch {
+      // Fallback gracefully
+    }
+
+    return Array.from(modelsMap.values())
   }
 
   public override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
