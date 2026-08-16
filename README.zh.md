@@ -2,24 +2,24 @@
 
 [English](README.md) | 中文
 
-面向 **DeepSeek Harness (`dsh`)** 与 **Cordis** 微内核架构的社区插件与能力扩展精选合集。
+为 **DeepSeek Harness (`dsh`)** 量身打造的高性能社区插件、工具扩展与前沿能力合集，基于 **Cordis** 微内核架构构建。
 
 ---
 
-## 🌟 插件列表
+## 🌟 包含插件列表
 
-| 插件名称 | 目录 / 包名 | 描述 | 状态 |
+| 插件名称 | 插件目录 | 功能描述 | 状态 |
 |---|---|---|---|
-| 🔑 **OAuth Models & Subscriptions** | [`plugins/dsh-oauth-models`](./plugins/dsh-oauth-models) | OpenAI Codex (ChatGPT Plus/Pro)、Google Antigravity (CloudCode PA) 与 xAI Grok 官方订阅直连插件。支持 100% 远端动态模型同步、一键浏览器 PKCE 登录与 WebUI 配额看板。 | `v0.1.0` (就绪) |
-| 👁️ **DeepIris (深瞳)** | [`plugins/dsh-deepiris`](./plugins/dsh-deepiris) | 为 DeepSeek 提供多 Provider VLM 视觉感知、高精度 OCR 识别与自主 UI 闭环质检能力。 | `v0.1.0` (就绪) |
+| 🔑 **OAuth 订阅模型直连与实时额度** | [`plugins/dsh-oauth-models`](./plugins/dsh-oauth-models) | 直连 OpenAI Codex (ChatGPT Plus/Pro) 与 xAI Grok (SuperGrok) 官方订阅模型，100% 远端动态模型同步，一键浏览器 PKCE 登录，WebUI 主视窗原生 **「实时额度」** 面板。*(Google Antigravity 默认关闭，可按需开启)* | `v0.1.0` (就绪) |
+| 👁️ **DeepIris (深瞳多模态视觉)** | [`plugins/dsh-deepiris`](./plugins/dsh-deepiris) | 为 DeepSeek 带来多 Provider 视觉多模态理解、高精 OCR 解析与自主 UI 页面测试/巡检能力。 | `v0.1.0` (就绪) |
 
 ---
 
-## 🚀 快速上手
+## 🚀 快速上手指南
 
-### 1. 在 `cordis.patch.yml` 中声明挂载插件
+### 1. 在 `cordis.patch.yml` 中声明插件
 
-在 `~/.dsh/cordis.patch.yml` 或你的配置文件中加入：
+在用户主目录的 `~/.dsh/cordis.patch.yml`（或项目级配置）中启用插件：
 
 ```yaml
 - id: oauth-models
@@ -28,10 +28,10 @@
     providers:
       codex:
         enabled: true
-      antigravity:
-        enabled: true
       grok:
         enabled: true
+      antigravity:
+        enabled: false # Google Antigravity (默认关闭)
 
 - id: deepiris
   name: '@eykicuihb/dsh-deepiris'
@@ -45,23 +45,19 @@
 pnpm dsh web
 ```
 
-### 3. 进行 OAuth 账号授权
+### 3. 一键授权登录与查看实时额度
 
-1. 在 WebUI 设置中心打开 **OAuth 订阅配额 (OAuth Subscriptions & Quotas)**；
-2. 在对应厂商卡片点击 **`🔑 OAuth 浏览器登录`**；
-3. 在弹出的浏览器窗口中完成 Google、OpenAI 或 xAI 官方授权；
-4. 授权成功后返回对话界面，即可在模型列表中直接选择动态同步到的最新模型（如 `gemini-3.6-flash`、`gpt-5.6-sol`、`grok-4.20`、`claude-sonnet-4-6` 等）并开始带有思考链的顺畅对话！
+1. 打开 WebUI，在顶部导航栏（**「对话」** 与 **「轨迹」** 右侧）点击 **「实时额度」** 标签页。
+2. 点击对应 Provider 卡片上的 **`🔑 OAuth 浏览器登录`**（支持 OpenAI Codex 与 xAI Grok）。
+3. 在弹出的官方授权页面中完成登录，凭据安全落盘并开启后台静默自动续期。
+4. 页面将即刻展示来自官方 post-OAuth 接口的实时数据（如 `Weekly SuperGrok Limit (已用 3% / 剩余 97%)`、每周重置时间倒计时等）。
+5. 回到对话页，在模型切换器中直接选择动态同步出的前沿推理模型（如 `gpt-5.6-sol`、`grok-4.20-0309-reasoning`、`grok-3`），享受完整思考链（Reasoning）流式输出！
 
 ---
 
-## 🛠️ 贡献指南
+## 🛠️ 参与贡献
 
-欢迎社区开发者为 DeepSeek Harness 生态贡献更多实用插件！
-
-1. Fork 本仓库并 Clone 到本地；
-2. 在 `plugins/<你的插件名>` 目录下开发插件；
-3. 确保遵循 Cordis 插件规范（声明 `inject` 依赖、可逆生命周期 Disposer、严格配置 Schema 校验）；
-4. 提交 Pull Request。
+欢迎提交 Issue 和 Pull Request 为 DeepSeek Harness 生态添砖加瓦！
 
 ---
 

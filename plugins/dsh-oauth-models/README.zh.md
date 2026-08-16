@@ -1,50 +1,47 @@
-# @eykicuihb/dsh-oauth-models (OAuth 订阅模型与配额看板插件)
+# @eykicuihb/dsh-oauth-models (OAuth 订阅模型直连与实时额度面板)
 
 [English](README.md) | 中文
 
-**`dsh-oauth-models`** 是专为 **DeepSeek Harness (`dsh`)** 打造的 Cordis 原生微内核插件，用于无缝桥接 **OpenAI Codex (ChatGPT Plus / Pro)**、**Google Antigravity (Gemini & Claude on CloudCode PA)** 与 **xAI Grok (SuperGrok / Premium)** 的官方 OAuth 订阅账号。
+**`dsh-oauth-models`** 是专为 **DeepSeek Harness (`dsh`)** 打造的高性能 Cordis 原生插件，可将您的 **OpenAI Codex (ChatGPT Plus / Pro)** 与 **xAI Grok (SuperGrok / Premium)** 官方订阅无缝接入 Harness 运行时。*(Google Antigravity 默认关闭，可按需开启)*。
 
-无需购买昂贵的按 Token 计费 API Key，直接复用您现有的订阅权益，具备 **100% 远端动态模型目录实时拉取**、**一键式浏览器 PKCE 交互登录**、**完整思考链流式渲染 (`reasoning-delta`)** 以及 **WebUI 订阅与配额管理看板**。
+零 API 额外费用，支持 **100% 远端动态模型目录同步**、**一键浏览器 PKCE 授权登录**、**思考链深度推理流（`reasoning-delta`）实时输出**，并在 WebUI 主视窗注入原生的 **「实时额度」** 导航面板。
 
 ---
 
 ## 🌟 核心特性
 
-### 1. 🔑 一键交互式 OAuth 2.0 PKCE 浏览器登录
-- **内置本地 OAuth 握手服务**：全自动监听标准回调端口（1455、51121、56121），生成安全 PKCE 密钥对。
-- **一键授权**：在 WebUI 设置页面点击 **`🔑 OAuth 浏览器登录`**，直接拉起 Google / OpenAI / xAI 官方授权页。
-- **无感静默自动续期**：全自动后台刷新即将过期的 Access Token，长期运行永不掉线。
+### 1. 🔑 一键交互式 PKCE OAuth 浏览器登录
+- **内置轻量 PKCE 服务**：在本地标准回调端口上处理各官方 OAuth 2.0 授权码流。
+- **一键浏览器授权**：在 WebUI 中点击 **`🔑 OAuth 浏览器登录`** 即可调起官方 OpenAI / xAI 授权页。
+- **静默自动续期**：持续监控 Token 过期倒计时并在后台静默刷新，会话调用永不断连。
 
-### 2. 🌐 100% 官方远端动态模型同步（零本地写死）
-- **Google Antigravity**：登录后实时向 Google CloudCode PA 接口（`/v1internal:fetchAvailableModels`）探测并拉取最新模型：
-  - `gemini-3.6-flash-high` / `gemini-3.6-flash-medium` / `gemini-3.6-flash-low`
-  - `gemini-3.1-pro-high` / `gemini-3.1-flash-lite`
-  - `gemini-2.5-pro` (支持思考链，100万上下文) / `gemini-2.5-flash`
-  - `claude-sonnet-4-6` (深度思考) / `claude-opus-4-6-thinking`
-  - `gpt-oss-120b-medium`、`gemini-3-flash` 等全部官方最新模型。
-- **xAI Grok**：实时从 `https://api.x.ai/v1/models` 同步账号下可用模型：
+### 2. 🌐 100% 远端动态模型目录同步（零硬编码）
+- **xAI Grok**：直连 `https://api.x.ai/v1/models` 获取最新模型：
   - `grok-4.20-0309-reasoning` / `grok-4.20-0309-non-reasoning` / `grok-4.20-multi-agent-0309`
-  - `grok-4.3`、`grok-4.5`、`grok-4.6`、`grok-build-0.1` 等。
-- **OpenAI Codex**：通过 ChatGPT Backend Responses 协议实时动态挂载：
-  - `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`
-  - `gpt-5.5`、`gpt-5.4`、`gpt-5.4-mini`、`codex-auto-review`。
+  - `grok-4.3`, `grok-4.5`, `grok-3`, `grok-build-0.1` 等。
+- **OpenAI Codex**：直连 ChatGPT Responses API 获取最新模型：
+  - `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`
+  - `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `codex-auto-review`。
+- **Google Antigravity（可选）**：开启后直连 Google CloudCode PA (`/v1internal:fetchAvailableModels`) 动态拉取 Gemini 与 Claude 模型。
 
-### 3. 🧠 深度思考链流式支持 (Thinking Stream)
-- 100% 遵循 DeepSeek Harness 核心 `BlockAssembler` 流式契约。
-- 思考过程 (`reasoning-delta`) 与正文回答 (`text-delta`) 分离流式推送，前端实时展开折叠思考过程。
-- 严格遵循多轮对话上下文规范（用户输入 `input_text` 与助手输出 `output_text` 动态序列化）。
+### 3. 📊 100% 官方 post-OAuth 远端真实额度接口直连
+- **xAI Grok**：直连 `https://cli-chat-proxy.grok.com/v1/billing?format=credits` 抓取真实 `creditUsagePercent`（如 `已用 3% / 剩余 97%`）与每周重置时间。
+- **OpenAI Codex**：直连 `https://chatgpt.com/backend-api/wham/usage` 抓取真实 `used_percent`（如 `已用 55% / 剩余 45%`）与每周滚动重置时间。
+- **Google Antigravity（可选）**：直接区分并计算 Gemini 5小时周期配额与 Claude 独立配额。
 
-### 4. 📊 WebUI 原生暗黑风格配额与账号管理看板
-- 在 WebUI 设置中心自动注入 **OAuth 订阅配额 (OAuth Subscriptions & Quotas)** 独立标签页。
-- 实时展示授权邮箱、订阅套餐等级、连接状态（`CONNECTED` / `UNAUTHORIZED`）、手动刷新与一键注销。
+### 4. 🧠 完整深度思考链（Reasoning）流式输出
+- 100% 兼容 DeepSeek Harness 的 `BlockAssembler` 分块协议。
+- 同步传输 `reasoning-delta` 与 `text-delta`，在 WebUI 中完美呈现可折叠的实时思考过程。
+
+### 5. 🎨 原生 WebUI「实时额度」主导航 Tab
+- 通过 `conversation.view` 插槽挂载在顶部导航栏（并列于 **「对话」** 与 **「轨迹」** 右侧）。
+- 采用深色胶囊进度条与倒计时设计，实时掌控各大订阅配额。
 
 ---
 
-## 📦 安装与配置使用
+## 📦 安装与配置
 
-### 1. 在 `cordis.patch.yml` 中启用插件
-
-在 `~/.dsh/cordis.patch.yml` 或项目的配置文件中声明：
+### 1. 在 `cordis.patch.yml` 中声明插件
 
 ```yaml
 - id: oauth-models
@@ -53,10 +50,10 @@
     providers:
       codex:
         enabled: true
-      antigravity:
-        enabled: true
       grok:
         enabled: true
+      antigravity:
+        enabled: false # Google Antigravity (默认关闭)
 ```
 
 ### 2. 启动 DeepSeek Harness WebUI
@@ -65,34 +62,30 @@
 pnpm dsh web
 ```
 
-### 3. 进行 OAuth 账号授权
+### 3. 完成 OAuth 授权
 
-1. 浏览器打开 WebUI 页面（默认 `http://localhost:5173`）。
-2. 点击左侧导航栏 **Settings (设置)** -> **OAuth 订阅配额 (OAuth Subscriptions & Quotas)**。
-3. 在对应卡片（OpenAI Codex / Google Antigravity / xAI Grok）上点击 **`🔑 OAuth 浏览器登录`**。
-4. 浏览器会弹出官方登录窗口，登录并同意授权后窗口自动关闭，DSH 即刻显示 `CONNECTED` 并动态列出最新模型列表。
+1. 打开 WebUI，切换至顶部 **「实时额度」** Tab。
+2. 点击对应 Provider 卡片上的 **`🔑 OAuth 浏览器登录`**。
+3. 在弹出的浏览器窗口中确认授权，凭据自动加密保存，模型列表与配额进度条即刻自动刷新。
 
-### 4. 选择模型开始对话
+### 4. 调用 OAuth 模型对话
 
-在主界面的模型选择下拉菜单或 CLI 中自由切换任意同步出的最新模型：
+在 WebUI 下拉模型列表或 CLI 中直接指定模型名称：
 
 ```bash
-# 通过 CLI 使用 Google Antigravity 模型
-dsh --provider antigravity --model gemini-3.6-flash-high
-
-# 通过 CLI 使用 OpenAI Codex 模型
+# 命令行调用 OpenAI Codex 模型
 dsh --provider codex --model gpt-5.6-sol
 
-# 通过 CLI 使用 xAI Grok 模型
+# 命令行调用 xAI Grok 模型
 dsh --provider grok --model grok-4.20-0309-reasoning
 ```
 
 ---
 
-## 🔒 安全说明
+## 🔒 凭据安全
 
-- 凭据安全保存在本机 `~/.dsh/oauth/<provider>.json` 中。
-- 绝不经过任何第三方转发或跳板服务器，所有请求均直连各厂商官方端点。
+- Token 凭据加密保存在本地 `~/.dsh/oauth/<provider>.json`。
+- 不经过任何第三方代理服务，所有请求均为本机与官方 API 直接通信。
 
 ---
 
