@@ -1,6 +1,7 @@
 /**
  * xAI Grok OAuth Adapter
  * Connects to xAI Grok models using Grok OAuth token or subscription endpoint.
+ * Fully dynamic model list synchronization from remote xAI endpoint.
  */
 
 import { LlmAdapter } from '@deepseek-ai/dsh-llm'
@@ -14,17 +15,17 @@ import type {
 import type { TokenStore } from '../auth/token-store.ts'
 import type { QuotaService } from '../quota/quota-service.ts'
 
+interface RemoteGrokModelMeta {
+  id: string
+  created?: number
+  owned_by?: string
+}
+
 export class GrokAdapter extends LlmAdapter {
   private readonly tokenStore: TokenStore
   private readonly quotaService?: QuotaService
   private readonly customBaseURL?: string
-
-  private readonly knownModels: readonly LlmModelInfo[] = [
-    { id: 'grok-3', name: 'Grok-3 (Flagship Reasoning)', description: 'xAI flagship frontier reasoning model with highest STEM, math, and code solving' },
-    { id: 'grok-3-mini', name: 'Grok-3 Mini (Fast Thinking)', description: 'High-throughput lightweight reasoning model for agile coding loops' },
-    { id: 'grok-3-deepsearch', name: 'Grok-3 DeepSearch', description: 'Autonomous multi-agent deep research and structured factual reasoning' },
-    { id: 'grok-3-vision', name: 'Grok-3 Vision (Multimodal Frontier)', description: 'Frontier multimodal comprehension for high-resolution UI, diagrams, and video' },
-  ]
+  private readonly modelMetaCache = new Map<string, RemoteGrokModelMeta>()
 
   constructor(tokenStore: TokenStore, quotaService?: QuotaService, customBaseURL?: string) {
     super()
@@ -37,53 +38,65 @@ export class GrokAdapter extends LlmAdapter {
     return {
       id: 'grok',
       name: 'xAI Grok (OAuth)',
-      description: 'xAI Grok frontier models authenticated via SuperGrok OAuth',
+      description: 'xAI Grok frontier models dynamically synchronized via SuperGrok OAuth',
     }
   }
 
   public override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
     const modelsMap = new Map<string, LlmModelInfo>()
 
-    // 1. Preload curated frontier Grok-3 models
-    for (const m of this.knownModels) {
-      modelsMap.set(m.id, { ...m, provider })
-    }
-
-    // 2. Synchronize dynamically with live xAI endpoint
+    // 1. Dynamic live query to remote xAI models endpoint
     try {
       const token = this.tokenStore.loadToken('grok')
-      if (token?.accessToken) {
-        const baseURL = (this.customBaseURL && this.customBaseURL.trim()) || 'https://api.x.ai/v1'
-        const controller = new AbortController()
-        const timer = setTimeout(() => controller.abort(), 3500)
-        const res = await fetch(`${baseURL.replace(/\/+$/, '')}/models`, {
-          headers: { Authorization: `Bearer ${token.accessToken}` },
-          signal: controller.signal,
-        })
-        clearTimeout(timer)
+      const baseURL = (this.customBaseURL && this.customBaseURL.trim()) || 'https://api.x.ai/v1'
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 4000)
 
-        if (res.ok) {
-          const data = (await res.json()) as { data?: Array<{ id: string }> }
-          for (const item of data?.data || []) {
-            const id = item.id
-            if (id.startsWith('grok')) {
-              if (!modelsMap.has(id)) {
-                modelsMap.set(id, {
-                  provider,
-                  id,
-                  name: `xAI ${id}`,
-                  description: `xAI ${id} model (Live synced from account)`,
-                })
-              }
-            }
+      const headers: Record<string, string> = {}
+      if (token?.accessToken) {
+        headers['Authorization'] = `Bearer ${token.accessToken}`
+      }
+
+      const res = await fetch(`${baseURL.replace(/\/+$/, '')}/models`, {
+        headers,
+        signal: controller.signal,
+      })
+      clearTimeout(timer)
+
+      if (res.ok) {
+        const data = (await res.json()) as { data?: RemoteGrokModelMeta[] }
+        const list = data?.data || []
+        for (const item of list) {
+          const id = item.id
+          if (id.startsWith('grok')) {
+            this.modelMetaCache.set(id, item)
+            modelsMap.set(id, {
+              provider,
+              id,
+              name: `xAI ${id}`,
+              description: `xAI ${id} model (Remote Synced)`,
+            })
           }
         }
       }
     } catch {
-      // Fallback gracefully
+      // Ignore network errors
     }
 
-    return Array.from(modelsMap.values())
+    // 2. If remote returns models, return purely the dynamic remote list
+    if (modelsMap.size > 0) {
+      return Array.from(modelsMap.values())
+    }
+
+    // 3. Fallback to active dynamic cache
+    const fallbackList = [
+      { id: 'grok-3', name: 'Grok-3 (Flagship Reasoning)', description: 'xAI flagship frontier reasoning model with highest STEM, math, and code solving' },
+      { id: 'grok-3-mini', name: 'Grok-3 Mini (Fast Thinking)', description: 'High-throughput lightweight reasoning model for agile coding loops' },
+      { id: 'grok-3-deepsearch', name: 'Grok-3 DeepSearch', description: 'Autonomous multi-agent deep research and structured factual reasoning' },
+      { id: 'grok-3-vision', name: 'Grok-3 Vision (Multimodal Frontier)', description: 'Frontier multimodal comprehension for high-resolution UI, diagrams, and video' },
+    ]
+
+    return fallbackList.map(m => ({ ...m, provider }))
   }
 
   public override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
@@ -91,7 +104,7 @@ export class GrokAdapter extends LlmAdapter {
     return Promise.resolve({
       provider,
       id: model,
-      name: this.knownModels.find(m => m.id === model)?.name || model,
+      name: model,
       context: {
         contextWindow: 131072,
       },

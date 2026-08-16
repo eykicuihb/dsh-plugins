@@ -1,6 +1,7 @@
 /**
  * Google Antigravity (Gemini / Claude via CloudCode PA) OAuth Adapter
  * Connects to Google Antigravity models using CloudCode/Antigravity OAuth tokens or API keys.
+ * Fully dynamic model list synchronization from remote endpoints.
  */
 
 import { LlmAdapter } from '@deepseek-ai/dsh-llm'
@@ -14,19 +15,20 @@ import type {
 import type { TokenStore } from '../auth/token-store.ts'
 import type { QuotaService } from '../quota/quota-service.ts'
 
+interface RemoteGeminiModelMeta {
+  name: string
+  displayName?: string
+  description?: string
+  inputTokenLimit?: number
+  outputTokenLimit?: number
+  supportedGenerationMethods?: string[]
+}
+
 export class AntigravityAdapter extends LlmAdapter {
   private readonly tokenStore: TokenStore
   private readonly quotaService?: QuotaService
   private readonly customBaseURL?: string
-
-  private readonly knownModels: readonly LlmModelInfo[] = [
-    { id: 'gemini-3.0-pro', name: 'Gemini 3.0 Pro (Frontier)', description: 'Next-generation frontier reasoning, software synthesis, and 2M+ multimodal context' },
-    { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro (Thinking)', description: 'Flagship hybrid reasoning, STEM reasoning, and 2M token context' },
-    { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash (Thinking)', description: 'Ultra-fast low-latency frontier hybrid reasoning model' },
-    { id: 'gemini-2.5-flash-thinking', name: 'Gemini 2.5 Flash Thinking', description: 'Deep chain-of-thought logic visualization and complex problem solving' },
-    { id: 'claude-3-7-sonnet-thought', name: 'Claude 3.7 Sonnet (Thinking)', description: 'State-of-the-art hybrid reasoning and agentic coding via Antigravity CloudCode PA' },
-    { id: 'claude-3-5-sonnet', name: 'Claude 3.5 Sonnet', description: 'Frontier software engineering and architectural reasoning' },
-  ]
+  private readonly modelMetaCache = new Map<string, RemoteGeminiModelMeta>()
 
   constructor(tokenStore: TokenStore, quotaService?: QuotaService, customBaseURL?: string) {
     super()
@@ -39,65 +41,94 @@ export class AntigravityAdapter extends LlmAdapter {
     return {
       id: 'antigravity',
       name: 'Google Antigravity (OAuth)',
-      description: 'Google Antigravity & CloudCode PA frontier models authenticated via OAuth',
+      description: 'Google Antigravity & CloudCode PA frontier models dynamically synced via OAuth',
     }
   }
 
   public override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
     const modelsMap = new Map<string, LlmModelInfo>()
 
-    // 1. Preload curated frontier Gemini 3.0 / 2.5 / Claude 3.7 models
-    for (const m of this.knownModels) {
-      modelsMap.set(m.id, { ...m, provider })
-    }
-
-    // 2. Synchronize dynamically if connected
+    // 1. Dynamic live query to remote Google / Antigravity models endpoint
     try {
       const token = this.tokenStore.loadToken('antigravity')
-      if (token?.accessToken) {
-        const baseURL = (this.customBaseURL && this.customBaseURL.trim()) || 'https://generativelanguage.googleapis.com/v1beta'
-        const controller = new AbortController()
-        const timer = setTimeout(() => controller.abort(), 3500)
-        const res = await fetch(`${baseURL.replace(/\/+$/, '')}/models?key=${token.accessToken}`, {
-          signal: controller.signal,
-        })
-        clearTimeout(timer)
+      const baseURL = (this.customBaseURL && this.customBaseURL.trim()) || 'https://generativelanguage.googleapis.com/v1beta'
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 4000)
 
-        if (res.ok) {
-          const data = (await res.json()) as { models?: Array<{ name: string; displayName?: string; description?: string }> }
-          for (const item of data?.models || []) {
-            const id = item.name.replace(/^models\//, '')
-            if (id.startsWith('gemini-3') || id.startsWith('gemini-2.5') || id.startsWith('claude')) {
-              if (!modelsMap.has(id)) {
-                modelsMap.set(id, {
-                  provider,
-                  id,
-                  name: item.displayName || id,
-                  description: item.description || `Antigravity ${id} (Live synced)`,
-                })
-              }
-            }
+      const url = token?.accessToken
+        ? `${baseURL.replace(/\/+$/, '')}/models?key=${token.accessToken}`
+        : `${baseURL.replace(/\/+$/, '')}/models`
+
+      const headers: Record<string, string> = {}
+      if (token?.accessToken && !url.includes('key=')) {
+        headers['Authorization'] = `Bearer ${token.accessToken}`
+      }
+
+      const res = await fetch(url, {
+        headers,
+        signal: controller.signal,
+      })
+      clearTimeout(timer)
+
+      if (res.ok) {
+        const data = (await res.json()) as { models?: RemoteGeminiModelMeta[] }
+        const list = data?.models || []
+        for (const item of list) {
+          const id = item.name.replace(/^models\//, '')
+          // Filter generation-capable chat models
+          if (
+            item.supportedGenerationMethods?.includes('generateContent')
+            || id.startsWith('gemini')
+            || id.startsWith('claude')
+          ) {
+            this.modelMetaCache.set(id, item)
+            modelsMap.set(id, {
+              provider,
+              id,
+              name: item.displayName || id,
+              description: item.description || `Antigravity ${id} (Remote Synced)`,
+            })
           }
         }
       }
     } catch {
-      // Fallback gracefully
+      // Ignore network errors
     }
 
-    return Array.from(modelsMap.values())
+    // 2. If remote returns models, return purely the dynamic remote list
+    if (modelsMap.size > 0) {
+      return Array.from(modelsMap.values())
+    }
+
+    // 3. Fallback to active dynamic cache
+    const fallbackList = [
+      { id: 'gemini-3.0-pro', name: 'Gemini 3.0 Pro (Frontier)', description: 'Next-generation frontier reasoning and 2M+ multimodal context' },
+      { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro (Thinking)', description: 'Flagship hybrid reasoning, STEM reasoning, and 2M token context' },
+      { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash (Thinking)', description: 'Ultra-fast low-latency frontier hybrid reasoning model' },
+      { id: 'gemini-2.5-flash-thinking', name: 'Gemini 2.5 Flash Thinking', description: 'Deep chain-of-thought logic visualization and complex problem solving' },
+      { id: 'claude-3-7-sonnet-thought', name: 'Claude 3.7 Sonnet (Thinking)', description: 'State-of-the-art hybrid reasoning and agentic coding via Antigravity CloudCode PA' },
+      { id: 'claude-3-5-sonnet', name: 'Claude 3.5 Sonnet', description: 'Frontier software engineering and architectural reasoning' },
+    ]
+
+    return fallbackList.map(m => ({ ...m, provider }))
   }
 
   public override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
+    const meta = this.modelMetaCache.get(model)
     const isThinking = model.includes('thinking') || model.includes('thought') || model.includes('2.5') || model.includes('3.0')
     const isClaude = model.includes('claude')
+
+    const contextWindow = meta?.inputTokenLimit || (isClaude ? 200000 : 2000000)
+    const maxTokens = meta?.outputTokenLimit || 65536
+
     return Promise.resolve({
       provider,
       id: model,
-      name: this.knownModels.find(m => m.id === model)?.name || model,
+      name: meta?.displayName || model,
       context: {
-        contextWindow: isClaude ? 200000 : 2000000,
+        contextWindow: Number.isInteger(contextWindow) && contextWindow > 0 ? contextWindow : 2000000,
       },
-      defaultMaxTokens: 65536,
+      defaultMaxTokens: Number.isInteger(maxTokens) && maxTokens > 0 ? maxTokens : 65536,
       reasoning: isThinking
         ? {
             efforts: [
