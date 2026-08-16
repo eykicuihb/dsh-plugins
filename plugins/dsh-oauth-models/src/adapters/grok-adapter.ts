@@ -177,6 +177,7 @@ export class GrokAdapter extends LlmAdapter {
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
+    let hasReasoning = false
 
     try {
       while (true) {
@@ -190,7 +191,10 @@ export class GrokAdapter extends LlmAdapter {
         for (const line of lines) {
           const trimmed = line.trim()
           if (!trimmed || trimmed.startsWith(':')) continue
-          if (trimmed === 'data: [DONE]') return
+          if (trimmed === 'data: [DONE]') {
+            yield { type: 'finish', reason: { kind: 'stop' } }
+            return
+          }
 
           if (trimmed.startsWith('data: ')) {
             const dataStr = trimmed.slice(6)
@@ -200,11 +204,13 @@ export class GrokAdapter extends LlmAdapter {
               if (!choice) continue
 
               const delta = choice.delta
-              if (delta?.content) {
-                yield { type: 'text', text: delta.content }
-              }
               if (delta?.reasoning_content) {
-                yield { type: 'reasoning', text: delta.reasoning_content }
+                hasReasoning = true
+                yield { type: 'reasoning-delta', index: 0, text: delta.reasoning_content }
+              }
+              if (delta?.content) {
+                const textIndex = hasReasoning ? 1 : 0
+                yield { type: 'text-delta', index: textIndex, text: delta.content }
               }
             } catch {
               // Ignore partial JSON parse errors
@@ -212,6 +218,7 @@ export class GrokAdapter extends LlmAdapter {
           }
         }
       }
+      yield { type: 'finish', reason: { kind: 'stop' } }
     } finally {
       reader.releaseLock()
     }

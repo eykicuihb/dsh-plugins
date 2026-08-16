@@ -70,7 +70,8 @@ export class AntigravityAdapter extends LlmAdapter {
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${token.accessToken}`,
-            'User-Agent': 'antigravity/1.0.0',
+            'User-Agent': 'antigravity/cli/1.0.13 (aidev_client; os_type=darwin; arch=arm64)',
+            'x-goog-api-client': 'google-api-nodejs-client/10.3.0',
           },
           body: JSON.stringify({ project: token.accountId || '' }),
           signal: controller.signal,
@@ -186,7 +187,8 @@ export class AntigravityAdapter extends LlmAdapter {
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token.accessToken}`,
-        'User-Agent': 'antigravity/1.0.0',
+        'User-Agent': 'antigravity/cli/1.0.13 (aidev_client; os_type=darwin; arch=arm64)',
+        'x-goog-api-client': 'google-api-nodejs-client/10.3.0',
       },
       body: JSON.stringify(body),
       signal: options.signal,
@@ -204,6 +206,7 @@ export class AntigravityAdapter extends LlmAdapter {
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
+    let hasReasoning = false
 
     try {
       while (true) {
@@ -228,9 +231,11 @@ export class AntigravityAdapter extends LlmAdapter {
               const parts = candidate.content?.parts || []
               for (const part of parts) {
                 if (part.thought) {
-                  yield { type: 'reasoning', text: part.thought }
+                  hasReasoning = true
+                  yield { type: 'reasoning-delta', index: 0, text: part.thought }
                 } else if (part.text) {
-                  yield { type: 'text', text: part.text }
+                  const textIndex = hasReasoning ? 1 : 0
+                  yield { type: 'text-delta', index: textIndex, text: part.text }
                 }
               }
             } catch {
@@ -239,6 +244,7 @@ export class AntigravityAdapter extends LlmAdapter {
           }
         }
       }
+      yield { type: 'finish', reason: { kind: 'stop' } }
     } finally {
       reader.releaseLock()
     }

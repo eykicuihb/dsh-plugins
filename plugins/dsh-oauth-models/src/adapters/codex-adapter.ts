@@ -1,6 +1,6 @@
 /**
  * OpenAI Codex OAuth Adapter
- * Connects to OpenAI models using Codex OAuth token.
+ * Connects to OpenAI models using Codex OAuth token via ChatGPT backend API.
  * 100% dynamically synchronizes model list from active OAuth remote session.
  */
 
@@ -90,41 +90,6 @@ export class CodexAdapter extends LlmAdapter {
       }
     }
 
-    // 2. Synchronize dynamically from remote endpoint if available
-    try {
-      const baseURL = (this.customBaseURL && this.customBaseURL.trim()) || 'https://api.openai.com/v1'
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), 4000)
-      const res = await fetch(`${baseURL.replace(/\/+$/, '')}/models`, {
-        headers: { Authorization: `Bearer ${token.accessToken}` },
-        signal: controller.signal,
-      })
-      clearTimeout(timer)
-
-      if (res.ok) {
-        const data = (await res.json()) as { data?: Array<{ id: string }> }
-        for (const item of data?.data || []) {
-          const id = item.id
-          if (
-            !id.includes('realtime') && !id.includes('audio') &&
-            !id.includes('transcription') && !id.includes('embedding') && !id.includes('tts')
-          ) {
-            if (!this.dynamicModels.has(id)) {
-              this.dynamicModels.set(id, {
-                id,
-                name: id,
-                description: `OpenAI ${id} (Remote Synced)`,
-                contextWindow: 128000,
-                defaultMaxTokens: 16384,
-              })
-            }
-          }
-        }
-      }
-    } catch {
-      // Ignore network errors
-    }
-
     return Array.from(this.dynamicModels.values()).map(m => ({
       provider,
       id: m.id,
@@ -166,57 +131,63 @@ export class CodexAdapter extends LlmAdapter {
   }
 
   public override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
-    const model = options.model
+    const model = options.model || 'gpt-5.6-sol'
     const token = this.tokenStore.loadToken('codex')
     if (!token?.accessToken) {
       throw new Error('OpenAI Codex OAuth token not found. Please authorize via OAuth in settings.')
     }
 
-    const baseURL = (this.customBaseURL && this.customBaseURL.trim()) || 'https://api.openai.com/v1'
-    const endpoint = `${baseURL.replace(/\/+$/, '')}/chat/completions`
-
-    const meta = this.dynamicModels.get(model)
-    const isReasoning = Boolean(meta?.supportedReasoningLevels && meta.supportedReasoningLevels.length > 0)
-      || model.startsWith('o1') || model.startsWith('o3') || model.startsWith('gpt-5')
-
-    const messages = (options.messages || []).map((m: any) => {
-      if (typeof m.content === 'string') {
-        return { role: m.role, content: m.content }
-      }
-      if (Array.isArray(m.content)) {
-        const textParts = m.content
-          .filter((p: any) => p.type === 'text')
-          .map((p: any) => p.text)
-          .join('\n')
-        return { role: m.role, content: textParts }
-      }
-      return { role: m.role, content: String(m.content || '') }
-    })
-
-    const body: Record<string, any> = {
-      model,
-      messages,
-      stream: true,
-    }
-
-    if (isReasoning) {
-      if (options.reasoningEffort) {
-        body.reasoning_effort = options.reasoningEffort
-      }
-      if (options.maxTokens) {
-        body.max_completion_tokens = options.maxTokens
-      }
-    } else {
-      if (options.temperature !== undefined) body.temperature = options.temperature
-      if (options.maxTokens) body.max_tokens = options.maxTokens
-    }
+    const isCustomUrl = Boolean(this.customBaseURL && this.customBaseURL.trim())
+    const endpoint = isCustomUrl
+      ? `${this.customBaseURL!.trim().replace(/\/+$/, '')}/chat/completions`
+      : 'https://chatgpt.com/backend-api/codex/responses'
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${token.accessToken}`,
     }
     if (token.accountId) {
-      headers['ChatGPT-Account-ID'] = token.accountId
+      headers['ChatGPT-Account-Id'] = token.accountId
+    }
+
+    let body: Record<string, any>
+
+    if (isCustomUrl) {
+      const messages = (options.messages || []).map((m: any) => {
+        if (typeof m.content === 'string') return { role: m.role, content: m.content }
+        if (Array.isArray(m.content)) {
+          const text = m.content.filter((p: any) => p.type === 'text').map((p: any) => p.text).join('\n')
+          return { role: m.role, content: text }
+        }
+        return { role: m.role, content: String(m.content || '') }
+      })
+      body = { model, messages, stream: true }
+      if (options.temperature !== undefined) body.temperature = options.temperature
+      if (options.maxTokens) body.max_tokens = options.maxTokens
+    } else {
+      // ChatGPT Backend Codex Responses API format
+      const input = (options.messages || []).map((m: any) => {
+        const text = typeof m.content === 'string'
+          ? m.content
+          : Array.isArray(m.content)
+            ? m.content.filter((p: any) => p.type === 'text').map((p: any) => p.text).join('\n')
+            : String(m.content || '')
+        return {
+          type: 'message',
+          role: m.role === 'assistant' ? 'assistant' : 'user',
+          content: [{ type: 'input_text', text }],
+        }
+      })
+
+      body = {
+        model,
+        input,
+        stream: true,
+        store: false,
+      }
+      if (options.reasoningEffort) {
+        body.reasoning_effort = options.reasoningEffort
+      }
     }
 
     const response = await fetch(endpoint, {
@@ -238,6 +209,7 @@ export class CodexAdapter extends LlmAdapter {
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
+    let hasReasoning = false
 
     try {
       while (true) {
@@ -251,21 +223,38 @@ export class CodexAdapter extends LlmAdapter {
         for (const line of lines) {
           const trimmed = line.trim()
           if (!trimmed || trimmed.startsWith(':')) continue
-          if (trimmed === 'data: [DONE]') return
+          if (trimmed === 'data: [DONE]') {
+            yield { type: 'finish', reason: { kind: 'stop' } }
+            return
+          }
 
           if (trimmed.startsWith('data: ')) {
             const dataStr = trimmed.slice(6)
             try {
               const parsed = JSON.parse(dataStr)
-              const choice = parsed.choices?.[0]
-              if (!choice) continue
 
-              const delta = choice.delta
-              if (delta?.content) {
-                yield { type: 'text', text: delta.content }
+              // 1. ChatGPT Backend Responses API format
+              if (parsed.type === 'response.output_text.delta' || parsed.type === 'response.text.delta') {
+                if (parsed.delta) {
+                  const textIndex = hasReasoning ? 1 : 0
+                  yield { type: 'text-delta', index: textIndex, text: parsed.delta }
+                }
+              } else if (parsed.type === 'response.reasoning.delta' || parsed.type === 'response.thought.delta') {
+                if (parsed.delta) {
+                  hasReasoning = true
+                  yield { type: 'reasoning-delta', index: 0, text: parsed.delta }
+                }
               }
-              if (delta?.reasoning_content) {
-                yield { type: 'reasoning', text: delta.reasoning_content }
+
+              // 2. Classic OpenAI ChatCompletions format fallback
+              const choice = parsed.choices?.[0]
+              if (choice?.delta?.reasoning_content) {
+                hasReasoning = true
+                yield { type: 'reasoning-delta', index: 0, text: choice.delta.reasoning_content }
+              }
+              if (choice?.delta?.content) {
+                const textIndex = hasReasoning ? 1 : 0
+                yield { type: 'text-delta', index: textIndex, text: choice.delta.content }
               }
             } catch {
               // Ignore partial JSON parse errors
@@ -273,6 +262,7 @@ export class CodexAdapter extends LlmAdapter {
           }
         }
       }
+      yield { type: 'finish', reason: { kind: 'stop' } }
     } finally {
       reader.releaseLock()
     }
