@@ -1,3 +1,9 @@
+/**
+ * Google Antigravity (Gemini) OAuth Adapter
+ * Connects to Google Gemini models using CloudCode/Antigravity OAuth tokens or API keys.
+ */
+
+import { LlmAdapter } from '@deepseek-ai/dsh-llm'
 import type {
   GenerateOptions,
   LlmModelInfo,
@@ -5,7 +11,6 @@ import type {
   LlmResolvedModelInfo,
   StreamChunk,
 } from '@deepseek-ai/dsh-llm'
-import { LlmAdapter, LlmError } from '@deepseek-ai/dsh-llm'
 import type { TokenStore } from '../auth/token-store.ts'
 import type { QuotaService } from '../quota/quota-service.ts'
 
@@ -15,13 +20,13 @@ export class AntigravityAdapter extends LlmAdapter {
   private readonly customBaseURL?: string
 
   private readonly knownModels: readonly LlmModelInfo[] = [
-    { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro (Thinking)', description: 'Deep reasoning, coding, and multi-modal long-context analysis' },
-    { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash (Thinking)', description: 'Ultra-fast low latency hybrid reasoning model' },
-    { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', description: 'Next-generation fast multimodal agent model' },
-    { id: 'gemini-2.0-flash-thinking-exp', name: 'Gemini 2.0 Flash Thinking Exp', description: 'Thinking process visualization and complex logic' },
-    { id: 'gemini-2.0-pro-exp-02-05', name: 'Gemini 2.0 Pro Exp', description: 'Frontier experimental model for advanced coding' },
-    { id: 'gemini-exp-1206', name: 'Gemini Exp 1206', description: 'Experimental high-intelligence checkpoint' },
-    { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro', description: '2M token ultra-long context multimodal reasoning' },
+    { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro (Thinking)', description: 'Flagship hybrid reasoning, coding, and 2M multi-modal context' },
+    { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash (Thinking)', description: 'Ultra-fast low-latency frontier hybrid reasoning model' },
+    { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', description: 'Next-generation fast multimodal agent and coding model' },
+    { id: 'gemini-2.0-flash-thinking-exp', name: 'Gemini 2.0 Flash Thinking Exp', description: 'Real-time thinking visualization and complex logic' },
+    { id: 'gemini-2.0-pro-exp-02-05', name: 'Gemini 2.0 Pro Exp', description: 'Frontier experimental model specialized in advanced coding' },
+    { id: 'gemini-exp-1206', name: 'Gemini Exp 1206', description: 'High-intelligence experimental reasoning checkpoint' },
+    { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro', description: '2M token ultra-long context multimodal reasoning model' },
     { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash', description: 'Fast long context multimodal model' },
   ]
 
@@ -36,7 +41,7 @@ export class AntigravityAdapter extends LlmAdapter {
     return {
       id: 'antigravity',
       name: 'Google Antigravity (OAuth)',
-      description: 'Google Gemini models authenticated via Antigravity CloudCode PA OAuth',
+      description: 'Google Gemini frontier models authenticated via Antigravity OAuth',
     }
   }
 
@@ -70,7 +75,7 @@ export class AntigravityAdapter extends LlmAdapter {
                   provider,
                   id,
                   name: item.displayName || `Gemini ${id}`,
-                  description: item.description || `Google ${id} (Live synced)`,
+                  description: item.description || `Google ${id} (Live synced from account)`,
                 })
               }
             }
@@ -85,8 +90,7 @@ export class AntigravityAdapter extends LlmAdapter {
   }
 
   public override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
-    const isPro = model.includes('pro') || model.includes('exp')
-    const isThinking = model.includes('2.5') || model.includes('thinking')
+    const isThinking = model.includes('thinking') || model.includes('2.5')
     return Promise.resolve({
       provider,
       id: model,
@@ -94,7 +98,7 @@ export class AntigravityAdapter extends LlmAdapter {
       context: {
         contextWindow: model.includes('1.5-pro') ? 2000000 : 1000000,
       },
-      defaultMaxTokens: isPro ? 65536 : 8192,
+      defaultMaxTokens: model.includes('flash') && !isThinking ? 8192 : 65536,
       reasoning: isThinking
         ? {
             efforts: [
@@ -108,97 +112,67 @@ export class AntigravityAdapter extends LlmAdapter {
     })
   }
 
-  public override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
-    const accessToken = await this.tokenStore.getValidToken('antigravity')
-    const baseURL = (this.customBaseURL && this.customBaseURL.trim()) || 'https://daily-cloudcode-pa.googleapis.com/v1internal'
-
-    // Map system and user messages into Gemini format
-    let systemInstruction = ''
-    const contents: Array<{ role: string; parts: Array<{ text: string }> }> = []
-
-    for (const msg of options.messages) {
-      if (msg.role === 'system') {
-        for (const block of msg.content) {
-          if (block.type === 'text') {
-            systemInstruction += (systemInstruction ? '\n\n' : '') + block.text
-          }
-        }
-      } else {
-        const parts: Array<{ text: string }> = []
-        for (const block of msg.content) {
-          if (block.type === 'text') {
-            parts.push({ text: block.text })
-          }
-        }
-        contents.push({
-          role: msg.role === 'assistant' ? 'model' : 'user',
-          parts,
-        })
-      }
+  public override async *stream(
+    _provider: string,
+    model: string,
+    options: GenerateOptions,
+  ): AsyncIterableIterator<StreamChunk> {
+    const token = this.tokenStore.loadToken('antigravity')
+    if (!token?.accessToken) {
+      throw new Error('Google Antigravity OAuth token not found or expired. Please authorize via OAuth first.')
     }
 
-    const payload: Record<string, unknown> = {
-      model: options.model,
+    const baseURL = (this.customBaseURL && this.customBaseURL.trim()) || 'https://generativelanguage.googleapis.com/v1beta'
+    const endpoint = `${baseURL.replace(/\/+$/, '')}/models/${model}:streamGenerateContent?alt=sse&key=${token.accessToken}`
+
+    const contents = options.messages.map((m) => {
+      const role = m.role === 'assistant' ? 'model' : 'user'
+      if (typeof m.content === 'string') {
+        return { role, parts: [{ text: m.content }] }
+      }
+      const parts = (m.content || []).map((p: any) => {
+        if (p.type === 'text') return { text: p.text }
+        if (p.type === 'image' && p.image) {
+          return {
+            inline_data: {
+              mime_type: p.image.mediaType,
+              data: p.image.data,
+            },
+          }
+        }
+        return p
+      })
+      return { role, parts }
+    })
+
+    const body: Record<string, any> = {
       contents,
       generationConfig: {
+        temperature: options.temperature ?? 0.7,
         maxOutputTokens: options.maxTokens,
-        temperature: options.temperature,
       },
     }
 
-    if (systemInstruction) {
-      payload.systemInstruction = {
-        parts: [{ text: systemInstruction }],
-      }
-    }
-
-    const endpoint = `${baseURL.replace(/\/+$/, '')}:streamGenerateContent?alt=sse`
-
-    let response: Response
-    try {
-      response = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${accessToken}`,
-        },
-        body: JSON.stringify(payload),
-        signal: options.signal,
-      })
-    } catch (err) {
-      if (options.signal?.aborted) {
-        yield { type: 'finish', reason: 'aborted' }
-        return
-      }
-      throw new LlmError(`[AntigravityAdapter] Connection failed: ${(err as Error).message}`, 'NETWORK')
-    }
-
-    // Update QuotaService with live headers
-    if (this.quotaService && response.headers) {
-      this.quotaService.updateFromHeaders('antigravity', response.headers)
-    }
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    })
 
     if (!response.ok) {
-      const errText = await response.text().catch(() => '')
-      if (response.status === 429) {
-        throw new LlmError(`Google CloudCode PA quota exhausted: ${errText}`, 'RATE_LIMIT')
-      }
-      if (response.status === 401 || response.status === 403) {
-        throw new LlmError(`Google Antigravity OAuth unauthorized: ${errText}`, 'AUTH')
-      }
-      throw new LlmError(`Google Antigravity API error (${response.status}): ${errText}`, 'PROVIDER_ERROR')
+      const errText = await response.text()
+      throw new Error(`Google Gemini API error (${response.status}): ${errText}`)
     }
 
     if (!response.body) {
-      yield { type: 'finish', reason: 'error', failure: { code: 'EMPTY_RESPONSE', message: 'Empty stream body' } }
-      return
+      throw new Error('No response body received from Gemini API.')
     }
 
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
-    let activeBlockIndex = 0
-    let activeBlockType: 'text' | 'reasoning' | null = null
 
     try {
       while (true) {
@@ -218,50 +192,15 @@ export class AntigravityAdapter extends LlmAdapter {
             try {
               const parsed = JSON.parse(dataStr)
               const candidate = parsed.candidates?.[0]
-              const parts = candidate?.content?.parts || []
+              if (!candidate) continue
 
+              const parts = candidate.content?.parts || []
               for (const part of parts) {
                 if (part.thought) {
-                  if (activeBlockType !== 'reasoning') {
-                    if (activeBlockType) {
-                      yield { type: 'block-end', index: activeBlockIndex }
-                      activeBlockIndex++
-                    }
-                    yield { type: 'block-start', index: activeBlockIndex, block: { type: 'reasoning', text: '' } }
-                    activeBlockType = 'reasoning'
-                  }
-                  yield { type: 'reasoning-delta', index: activeBlockIndex, delta: part.text || '' }
+                  yield { type: 'reasoning', text: part.thought }
                 } else if (part.text) {
-                  if (activeBlockType !== 'text') {
-                    if (activeBlockType) {
-                      yield { type: 'block-end', index: activeBlockIndex }
-                      activeBlockIndex++
-                    }
-                    yield { type: 'block-start', index: activeBlockIndex, block: { type: 'text', text: '' } }
-                    activeBlockType = 'text'
-                  }
-                  yield { type: 'text-delta', index: activeBlockIndex, delta: part.text }
+                  yield { type: 'text', text: part.text }
                 }
-              }
-
-              if (parsed.usageMetadata) {
-                yield {
-                  type: 'usage',
-                  usage: {
-                    inputTokens: parsed.usageMetadata.promptTokenCount || 0,
-                    outputTokens: parsed.usageMetadata.candidatesTokenCount || 0,
-                  },
-                }
-              }
-
-              if (candidate?.finishReason) {
-                if (activeBlockType) {
-                  yield { type: 'block-end', index: activeBlockIndex }
-                  activeBlockType = null
-                }
-                const reason = candidate.finishReason === 'MAX_TOKENS' ? 'length' : 'stop'
-                yield { type: 'finish', reason }
-                return
               }
             } catch {
               // Ignore partial JSON parse errors
@@ -269,11 +208,6 @@ export class AntigravityAdapter extends LlmAdapter {
           }
         }
       }
-
-      if (activeBlockType) {
-        yield { type: 'block-end', index: activeBlockIndex }
-      }
-      yield { type: 'finish', reason: 'stop' }
     } finally {
       reader.releaseLock()
     }

@@ -1,3 +1,9 @@
+/**
+ * xAI Grok OAuth Adapter
+ * Connects to xAI Grok models using Grok OAuth token or subscription endpoint.
+ */
+
+import { LlmAdapter } from '@deepseek-ai/dsh-llm'
 import type {
   GenerateOptions,
   LlmModelInfo,
@@ -5,7 +11,6 @@ import type {
   LlmResolvedModelInfo,
   StreamChunk,
 } from '@deepseek-ai/dsh-llm'
-import { LlmAdapter, LlmError } from '@deepseek-ai/dsh-llm'
 import type { TokenStore } from '../auth/token-store.ts'
 import type { QuotaService } from '../quota/quota-service.ts'
 
@@ -15,12 +20,11 @@ export class GrokAdapter extends LlmAdapter {
   private readonly customBaseURL?: string
 
   private readonly knownModels: readonly LlmModelInfo[] = [
-    { id: 'grok-3', name: 'Grok-3 (Reasoning)', description: 'xAI flagship model with strong math, coding, and thinking' },
-    { id: 'grok-3-mini', name: 'Grok-3 Mini', description: 'Fast, lightweight thinking model' },
-    { id: 'grok-3-deepsearch', name: 'Grok-3 DeepSearch', description: 'Real-time multi-agent deep research and reasoning' },
-    { id: 'grok-2-vision-1212', name: 'Grok-2 Vision', description: 'Multimodal image and diagram comprehension' },
-    { id: 'grok-2-1212', name: 'Grok-2', description: 'High performance general text and coding model' },
-    { id: 'grok-beta', name: 'Grok Beta', description: 'Standard high-speed Grok chat model' },
+    { id: 'grok-3', name: 'Grok-3 (Flagship Reasoning)', description: 'xAI frontier flagship reasoning model with superior STEM, math, and coding' },
+    { id: 'grok-3-mini', name: 'Grok-3 Mini (Fast Thinking)', description: 'Fast, lightweight thinking model with high reasoning throughput' },
+    { id: 'grok-3-deepsearch', name: 'Grok-3 DeepSearch', description: 'Autonomous multi-agent deep search and structured reasoning' },
+    { id: 'grok-2-vision-1212', name: 'Grok-2 Vision', description: 'Multimodal vision model for diagrams, charts, and document analysis' },
+    { id: 'grok-2-1212', name: 'Grok-2', description: 'High-performance general coding and reasoning model' },
   ]
 
   constructor(tokenStore: TokenStore, quotaService?: QuotaService, customBaseURL?: string) {
@@ -34,7 +38,7 @@ export class GrokAdapter extends LlmAdapter {
     return {
       id: 'grok',
       name: 'xAI Grok (OAuth)',
-      description: 'xAI Grok models authenticated via SuperGrok / xAI OAuth',
+      description: 'xAI Grok frontier models authenticated via SuperGrok OAuth',
     }
   }
 
@@ -69,7 +73,7 @@ export class GrokAdapter extends LlmAdapter {
                   provider,
                   id,
                   name: `xAI ${id}`,
-                  description: `xAI ${id} model (Live synced)`,
+                  description: `xAI ${id} model (Live synced from account)`,
                 })
               }
             }
@@ -84,16 +88,16 @@ export class GrokAdapter extends LlmAdapter {
   }
 
   public override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
-    const isGrok3 = model.includes('grok-3')
+    const isReasoning = model.startsWith('grok-3')
     return Promise.resolve({
       provider,
       id: model,
       name: model,
       context: {
-        contextWindow: isGrok3 ? 131072 : 65536,
+        contextWindow: isReasoning ? 131072 : 65536,
       },
-      defaultMaxTokens: isGrok3 ? 32768 : 8192,
-      reasoning: isGrok3
+      defaultMaxTokens: isReasoning ? 32768 : 8192,
+      reasoning: isReasoning
         ? {
             efforts: [
               { id: 'low', name: 'Low' },
@@ -106,83 +110,69 @@ export class GrokAdapter extends LlmAdapter {
     })
   }
 
-  public override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
-    const accessToken = await this.tokenStore.getValidToken('grok')
+  public override async *stream(
+    _provider: string,
+    model: string,
+    options: GenerateOptions,
+  ): AsyncIterableIterator<StreamChunk> {
+    const token = this.tokenStore.loadToken('grok')
+    if (!token?.accessToken) {
+      throw new Error('xAI Grok OAuth token not found or expired. Please authorize via OAuth first.')
+    }
+
     const baseURL = (this.customBaseURL && this.customBaseURL.trim()) || 'https://api.x.ai/v1'
     const endpoint = `${baseURL.replace(/\/+$/, '')}/chat/completions`
 
-    const messages = options.messages.map((msg) => {
-      let content = ''
-      for (const block of msg.content) {
-        if (block.type === 'text') {
-          content += block.text
+    const messages = options.messages.map((m) => {
+      if (typeof m.content === 'string') {
+        return { role: m.role, content: m.content }
+      }
+      const parts = (m.content || []).map((p: any) => {
+        if (p.type === 'text') return { type: 'text', text: p.text }
+        if (p.type === 'image' && p.image) {
+          return {
+            type: 'image_url',
+            image_url: { url: `data:${p.image.mediaType};base64,${p.image.data}` },
+          }
         }
-      }
-      return {
-        role: msg.role,
-        content,
-      }
+        return p
+      })
+      return { role: m.role, content: parts }
     })
 
-    const payload: Record<string, unknown> = {
-      model: options.model,
+    const body: Record<string, any> = {
+      model,
       messages,
       stream: true,
-      stream_options: { include_usage: true },
+      temperature: options.temperature ?? 0.7,
+      max_tokens: options.maxTokens,
     }
 
-    if (options.temperature !== undefined) {
-      payload.temperature = options.temperature
-    }
-    if (options.maxTokens !== undefined) {
-      payload.max_tokens = options.maxTokens
+    if (options.reasoningEffort && model.startsWith('grok-3')) {
+      body.reasoning_effort = options.reasoningEffort
     }
 
-    let response: Response
-    try {
-      response = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${accessToken}`,
-        },
-        body: JSON.stringify(payload),
-        signal: options.signal,
-      })
-    } catch (err) {
-      if (options.signal?.aborted) {
-        yield { type: 'finish', reason: 'aborted' }
-        return
-      }
-      throw new LlmError(`[GrokAdapter] Connection failed: ${(err as Error).message}`, 'NETWORK')
-    }
-
-    // Update QuotaService with live rate-limit response headers
-    if (this.quotaService && response.headers) {
-      this.quotaService.updateFromHeaders('grok', response.headers)
-    }
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token.accessToken}`,
+      },
+      body: JSON.stringify(body),
+    })
 
     if (!response.ok) {
-      const errText = await response.text().catch(() => '')
-      if (response.status === 429) {
-        throw new LlmError(`xAI Grok rate limit / quota exceeded: ${errText}`, 'RATE_LIMIT')
-      }
-      if (response.status === 401) {
-        throw new LlmError(`xAI Grok OAuth token unauthorized: ${errText}`, 'AUTH')
-      }
-      throw new LlmError(`xAI Grok API error (${response.status}): ${errText}`, 'PROVIDER_ERROR')
+      const errText = await response.text()
+      throw new Error(`xAI Grok API error (${response.status}): ${errText}`)
     }
 
     if (!response.body) {
-      yield { type: 'finish', reason: 'error', failure: { code: 'EMPTY_RESPONSE', message: 'Empty stream body' } }
-      return
+      throw new Error('No response body received from Grok API.')
     }
 
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
-    let activeBlockIndex = 0
-    let activeBlockType: 'text' | 'reasoning' | null = null
 
     try {
       while (true) {
@@ -196,65 +186,21 @@ export class GrokAdapter extends LlmAdapter {
         for (const line of lines) {
           const trimmed = line.trim()
           if (!trimmed || trimmed.startsWith(':')) continue
-          if (trimmed === 'data: [DONE]') {
-            if (activeBlockType) {
-              yield { type: 'block-end', index: activeBlockIndex }
-              activeBlockType = null
-            }
-            yield { type: 'finish', reason: 'stop' }
-            return
-          }
+          if (trimmed === 'data: [DONE]') return
 
           if (trimmed.startsWith('data: ')) {
             const dataStr = trimmed.slice(6)
             try {
               const parsed = JSON.parse(dataStr)
               const choice = parsed.choices?.[0]
-              const delta = choice?.delta
+              if (!choice) continue
 
-              if (delta?.reasoning_content || delta?.thought) {
-                const thoughtChunk = delta.reasoning_content || delta.thought
-                if (activeBlockType !== 'reasoning') {
-                  if (activeBlockType) {
-                    yield { type: 'block-end', index: activeBlockIndex }
-                    activeBlockIndex++
-                  }
-                  yield { type: 'block-start', index: activeBlockIndex, block: { type: 'reasoning', text: '' } }
-                  activeBlockType = 'reasoning'
-                }
-                yield { type: 'reasoning-delta', index: activeBlockIndex, delta: thoughtChunk }
-              }
-
+              const delta = choice.delta
               if (delta?.content) {
-                if (activeBlockType !== 'text') {
-                  if (activeBlockType) {
-                    yield { type: 'block-end', index: activeBlockIndex }
-                    activeBlockIndex++
-                  }
-                  yield { type: 'block-start', index: activeBlockIndex, block: { type: 'text', text: '' } }
-                  activeBlockType = 'text'
-                }
-                yield { type: 'text-delta', index: activeBlockIndex, delta: delta.content }
+                yield { type: 'text', text: delta.content }
               }
-
-              if (parsed.usage) {
-                yield {
-                  type: 'usage',
-                  usage: {
-                    inputTokens: parsed.usage.prompt_tokens || 0,
-                    outputTokens: parsed.usage.completion_tokens || 0,
-                  },
-                }
-              }
-
-              if (choice?.finish_reason) {
-                if (activeBlockType) {
-                  yield { type: 'block-end', index: activeBlockIndex }
-                  activeBlockType = null
-                }
-                const reason = choice.finish_reason === 'length' ? 'length' : 'stop'
-                yield { type: 'finish', reason }
-                return
+              if (delta?.reasoning_content) {
+                yield { type: 'reasoning', text: delta.reasoning_content }
               }
             } catch {
               // Ignore partial JSON parse errors
@@ -262,11 +208,6 @@ export class GrokAdapter extends LlmAdapter {
           }
         }
       }
-
-      if (activeBlockType) {
-        yield { type: 'block-end', index: activeBlockIndex }
-      }
-      yield { type: 'finish', reason: 'stop' }
     } finally {
       reader.releaseLock()
     }

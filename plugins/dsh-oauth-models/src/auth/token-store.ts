@@ -43,17 +43,70 @@ export class TokenStore {
       return this.cache.get(provider)
     }
 
+    // 1. Check local DSH oauth storage
     const filePath = this.getTokenFilePath(provider)
     try {
       if (fs.existsSync(filePath)) {
         const raw = fs.readFileSync(filePath, 'utf-8')
         const data = JSON.parse(raw) as OAuthTokenData
-        this.cache.set(provider, data)
-        return data
+        if (data?.accessToken) {
+          this.cache.set(provider, data)
+          return data
+        }
       }
     } catch {
-      // Return undefined on read / parse failure
+      // Ignore parse failure
     }
+
+    // 2. Multi-source automatic bridge for system OAuth credentials
+    if (provider === 'codex') {
+      try {
+        const codexAuthPath = path.join(os.homedir(), '.codex', 'auth.json')
+        if (fs.existsSync(codexAuthPath)) {
+          const raw = fs.readFileSync(codexAuthPath, 'utf-8')
+          const auth = JSON.parse(raw)
+          const token = auth?.tokens?.access_token || auth?.OPENAI_API_KEY || auth?.tokens?.id_token
+          if (token) {
+            const data: OAuthTokenData = {
+              provider: 'codex',
+              accessToken: token,
+              refreshToken: auth?.tokens?.refresh_token,
+              tokenType: 'Bearer',
+              email: auth?.tokens?.account_id || 'codex-oauth@local',
+            }
+            this.cache.set(provider, data)
+            return data
+          }
+        }
+      } catch {
+        // Ignore
+      }
+    }
+
+    if (provider === 'antigravity') {
+      try {
+        const geminiAuthPath = path.join(os.homedir(), '.gemini', 'oauth_creds.json')
+        if (fs.existsSync(geminiAuthPath)) {
+          const raw = fs.readFileSync(geminiAuthPath, 'utf-8')
+          const auth = JSON.parse(raw)
+          if (auth?.access_token) {
+            const data: OAuthTokenData = {
+              provider: 'antigravity',
+              accessToken: auth.access_token,
+              refreshToken: auth.refresh_token,
+              tokenType: auth.token_type || 'Bearer',
+              expiresAt: auth.expiry_date,
+              email: 'antigravity-oauth@local',
+            }
+            this.cache.set(provider, data)
+            return data
+          }
+        }
+      } catch {
+        // Ignore
+      }
+    }
+
     return undefined
   }
 
@@ -94,10 +147,6 @@ export class TokenStore {
     return 'connected'
   }
 
-  /**
-   * Returns a valid access token.
-   * If the current token is about to expire, it automatically executes provider-specific refresh.
-   */
   public async getValidToken(provider: OAuthProviderType, leadTimeMs: number = 120000): Promise<string> {
     const token = this.loadToken(provider)
     if (!token || !token.accessToken) {
@@ -111,7 +160,6 @@ export class TokenStore {
       return token.accessToken
     }
 
-    // Token is expiring or expired, perform auto-refresh if refreshToken is available
     if (!token.refreshToken) {
       if (now >= token.expiresAt) {
         throw new Error(`[dsh-oauth-models] OAuth token for ${provider} has expired and no refresh token is available.`)
@@ -119,7 +167,6 @@ export class TokenStore {
       return token.accessToken
     }
 
-    // Deduplicate in-flight refresh requests for the same provider
     let refreshPromise = this.refreshPromises.get(provider)
     if (!refreshPromise) {
       const handler = this.refreshHandlers.get(provider)
