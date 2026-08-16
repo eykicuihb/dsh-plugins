@@ -15,10 +15,14 @@ export class AntigravityAdapter extends LlmAdapter {
   private readonly customBaseURL?: string
 
   private readonly knownModels: readonly LlmModelInfo[] = [
-    { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro (Thinking)', description: 'Advanced reasoning, deep coding, and multimodal understanding' },
-    { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', description: 'Ultra-fast low latency multimodal model' },
-    { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', description: 'Next generation fast multimodal agent model' },
-    { id: 'gemini-exp', name: 'Gemini Experimental', description: 'Cutting-edge frontier experimental checkpoint' },
+    { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro (Thinking)', description: 'Deep reasoning, coding, and multi-modal long-context analysis' },
+    { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash (Thinking)', description: 'Ultra-fast low latency hybrid reasoning model' },
+    { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', description: 'Next-generation fast multimodal agent model' },
+    { id: 'gemini-2.0-flash-thinking-exp', name: 'Gemini 2.0 Flash Thinking Exp', description: 'Thinking process visualization and complex logic' },
+    { id: 'gemini-2.0-pro-exp-02-05', name: 'Gemini 2.0 Pro Exp', description: 'Frontier experimental model for advanced coding' },
+    { id: 'gemini-exp-1206', name: 'Gemini Exp 1206', description: 'Experimental high-intelligence checkpoint' },
+    { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro', description: '2M token ultra-long context multimodal reasoning' },
+    { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash', description: 'Fast long context multimodal model' },
   ]
 
   constructor(tokenStore: TokenStore, quotaService?: QuotaService, customBaseURL?: string) {
@@ -42,53 +46,71 @@ export class AntigravityAdapter extends LlmAdapter {
 
   public override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
     const isPro = model.includes('pro') || model.includes('exp')
+    const isThinking = model.includes('2.5') || model.includes('thinking')
     return Promise.resolve({
       provider,
       id: model,
       name: model,
-      context: isPro ? 1000000 : 500000,
-      defaultMaxTokens: 65536,
-      reasoning: {
-        efforts: [
-          { id: 'low', name: 'Low' },
-          { id: 'medium', name: 'Medium' },
-          { id: 'high', name: 'High' },
-        ],
-        defaultEffort: 'medium',
-      },
+      context: model.includes('1.5-pro') ? 2000000 : 1000000,
+      defaultMaxTokens: isPro ? 65536 : 8192,
+      reasoning: isThinking
+        ? {
+            efforts: [
+              { id: 'low', name: 'Low' },
+              { id: 'medium', name: 'Medium' },
+              { id: 'high', name: 'High' },
+            ],
+            defaultEffort: 'medium',
+          }
+        : undefined,
     })
   }
 
   public override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     const accessToken = await this.tokenStore.getValidToken('antigravity')
-    const baseURL = (this.customBaseURL && this.customBaseURL.trim()) || 'https://daily-cloudcode-pa.googleapis.com'
-    const endpoint = `${baseURL.replace(/\/+$/, '')}/v1internal:streamGenerateContent?alt=sse`
+    const baseURL = (this.customBaseURL && this.customBaseURL.trim()) || 'https://daily-cloudcode-pa.googleapis.com/v1internal'
 
-    // Convert messages to Gemini format
-    const contents = options.messages.map((msg) => {
-      let text = ''
-      for (const block of msg.content) {
-        if (block.type === 'text') {
-          text += block.text
+    // Map system and user messages into Gemini format
+    let systemInstruction = ''
+    const contents: Array<{ role: string; parts: Array<{ text: string }> }> = []
+
+    for (const msg of options.messages) {
+      if (msg.role === 'system') {
+        for (const block of msg.content) {
+          if (block.type === 'text') {
+            systemInstruction += (systemInstruction ? '\n\n' : '') + block.text
+          }
         }
+      } else {
+        const parts: Array<{ text: string }> = []
+        for (const block of msg.content) {
+          if (block.type === 'text') {
+            parts.push({ text: block.text })
+          }
+        }
+        contents.push({
+          role: msg.role === 'assistant' ? 'model' : 'user',
+          parts,
+        })
       }
-      return {
-        role: msg.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text }],
-      }
-    })
+    }
 
     const payload: Record<string, unknown> = {
       model: options.model,
       contents,
       generationConfig: {
-        temperature: options.temperature ?? 0.7,
-        maxOutputTokens: options.maxTokens ?? 16384,
-        thinkingConfig: {
-          thinkingBudget: options.reasoningEffort === 'high' ? 16384 : (options.reasoningEffort === 'low' ? 2048 : 8192),
-        },
+        maxOutputTokens: options.maxTokens,
+        temperature: options.temperature,
       },
     }
+
+    if (systemInstruction) {
+      payload.systemInstruction = {
+        parts: [{ text: systemInstruction }],
+      }
+    }
+
+    const endpoint = `${baseURL.replace(/\/+$/, '')}:streamGenerateContent?alt=sse`
 
     let response: Response
     try {
@@ -109,6 +131,7 @@ export class AntigravityAdapter extends LlmAdapter {
       throw new LlmError(`[AntigravityAdapter] Connection failed: ${(err as Error).message}`, 'NETWORK')
     }
 
+    // Update QuotaService with live headers
     if (this.quotaService && response.headers) {
       this.quotaService.updateFromHeaders('antigravity', response.headers)
     }
@@ -116,12 +139,12 @@ export class AntigravityAdapter extends LlmAdapter {
     if (!response.ok) {
       const errText = await response.text().catch(() => '')
       if (response.status === 429) {
-        throw new LlmError(`Google CloudCode quota / rate limit exceeded: ${errText}`, 'RATE_LIMIT')
+        throw new LlmError(`Google CloudCode PA quota exhausted: ${errText}`, 'RATE_LIMIT')
       }
-      if (response.status === 401) {
-        throw new LlmError(`Google OAuth token expired: ${errText}`, 'AUTH')
+      if (response.status === 401 || response.status === 403) {
+        throw new LlmError(`Google Antigravity OAuth unauthorized: ${errText}`, 'AUTH')
       }
-      throw new LlmError(`Google CloudCode error (${response.status}): ${errText}`, 'PROVIDER_ERROR')
+      throw new LlmError(`Google Antigravity API error (${response.status}): ${errText}`, 'PROVIDER_ERROR')
     }
 
     if (!response.body) {
@@ -156,9 +179,7 @@ export class AntigravityAdapter extends LlmAdapter {
               const parts = candidate?.content?.parts || []
 
               for (const part of parts) {
-                // Handle Google Gemini thinking / thought parts
-                if (part.thought || part.thinking) {
-                  const thoughtText = part.thought || part.thinking
+                if (part.thought) {
                   if (activeBlockType !== 'reasoning') {
                     if (activeBlockType) {
                       yield { type: 'block-end', index: activeBlockIndex }
@@ -167,11 +188,8 @@ export class AntigravityAdapter extends LlmAdapter {
                     yield { type: 'block-start', index: activeBlockIndex, block: { type: 'reasoning', text: '' } }
                     activeBlockType = 'reasoning'
                   }
-                  yield { type: 'reasoning-delta', index: activeBlockIndex, delta: thoughtText }
-                }
-
-                // Handle text parts
-                if (part.text) {
+                  yield { type: 'reasoning-delta', index: activeBlockIndex, delta: part.text || '' }
+                } else if (part.text) {
                   if (activeBlockType !== 'text') {
                     if (activeBlockType) {
                       yield { type: 'block-end', index: activeBlockIndex }
@@ -204,7 +222,7 @@ export class AntigravityAdapter extends LlmAdapter {
                 return
               }
             } catch {
-              // Ignore partial chunk parse error
+              // Ignore partial JSON parse errors
             }
           }
         }

@@ -15,9 +15,11 @@ export class GrokAdapter extends LlmAdapter {
   private readonly customBaseURL?: string
 
   private readonly knownModels: readonly LlmModelInfo[] = [
-    { id: 'grok-3', name: 'Grok-3 (Reasoning)', description: 'xAI flagship model with strong math, coding, and real-time reasoning' },
+    { id: 'grok-3', name: 'Grok-3 (Reasoning)', description: 'xAI flagship model with strong math, coding, and thinking' },
     { id: 'grok-3-mini', name: 'Grok-3 Mini', description: 'Fast, lightweight thinking model' },
-    { id: 'grok-2-vision', name: 'Grok-2 Vision', description: 'Multimodal vision and diagram comprehension' },
+    { id: 'grok-3-deepsearch', name: 'Grok-3 DeepSearch', description: 'Real-time multi-agent deep research and reasoning' },
+    { id: 'grok-2-vision-1212', name: 'Grok-2 Vision', description: 'Multimodal image and diagram comprehension' },
+    { id: 'grok-2-1212', name: 'Grok-2', description: 'High performance general text and coding model' },
     { id: 'grok-beta', name: 'Grok Beta', description: 'Standard high-speed Grok chat model' },
   ]
 
@@ -84,8 +86,13 @@ export class GrokAdapter extends LlmAdapter {
       messages,
       stream: true,
       stream_options: { include_usage: true },
-      temperature: options.temperature ?? 0.7,
-      max_tokens: options.maxTokens ?? 16384,
+    }
+
+    if (options.temperature !== undefined) {
+      payload.temperature = options.temperature
+    }
+    if (options.maxTokens !== undefined) {
+      payload.max_tokens = options.maxTokens
     }
 
     let response: Response
@@ -104,9 +111,10 @@ export class GrokAdapter extends LlmAdapter {
         yield { type: 'finish', reason: 'aborted' }
         return
       }
-      throw new LlmError(`[GrokAdapter] Network connection failed: ${(err as Error).message}`, 'NETWORK')
+      throw new LlmError(`[GrokAdapter] Connection failed: ${(err as Error).message}`, 'NETWORK')
     }
 
+    // Update QuotaService with live rate-limit response headers
     if (this.quotaService && response.headers) {
       this.quotaService.updateFromHeaders('grok', response.headers)
     }
@@ -114,10 +122,10 @@ export class GrokAdapter extends LlmAdapter {
     if (!response.ok) {
       const errText = await response.text().catch(() => '')
       if (response.status === 429) {
-        throw new LlmError(`xAI Grok rate limit exceeded: ${errText}`, 'RATE_LIMIT')
+        throw new LlmError(`xAI Grok rate limit / quota exceeded: ${errText}`, 'RATE_LIMIT')
       }
       if (response.status === 401) {
-        throw new LlmError(`xAI Grok OAuth token expired: ${errText}`, 'AUTH')
+        throw new LlmError(`xAI Grok OAuth token unauthorized: ${errText}`, 'AUTH')
       }
       throw new LlmError(`xAI Grok API error (${response.status}): ${errText}`, 'PROVIDER_ERROR')
     }
@@ -161,9 +169,8 @@ export class GrokAdapter extends LlmAdapter {
               const choice = parsed.choices?.[0]
               const delta = choice?.delta
 
-              // Handle Grok reasoning/thinking delta
               if (delta?.reasoning_content || delta?.thought) {
-                const thought = delta.reasoning_content || delta.thought
+                const thoughtChunk = delta.reasoning_content || delta.thought
                 if (activeBlockType !== 'reasoning') {
                   if (activeBlockType) {
                     yield { type: 'block-end', index: activeBlockIndex }
@@ -172,10 +179,9 @@ export class GrokAdapter extends LlmAdapter {
                   yield { type: 'block-start', index: activeBlockIndex, block: { type: 'reasoning', text: '' } }
                   activeBlockType = 'reasoning'
                 }
-                yield { type: 'reasoning-delta', index: activeBlockIndex, delta: thought }
+                yield { type: 'reasoning-delta', index: activeBlockIndex, delta: thoughtChunk }
               }
 
-              // Handle normal text content delta
               if (delta?.content) {
                 if (activeBlockType !== 'text') {
                   if (activeBlockType) {
@@ -208,7 +214,7 @@ export class GrokAdapter extends LlmAdapter {
                 return
               }
             } catch {
-              // Ignore partial chunk parsing error
+              // Ignore partial JSON parse errors
             }
           }
         }

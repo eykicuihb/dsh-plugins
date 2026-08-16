@@ -15,11 +15,14 @@ export class CodexAdapter extends LlmAdapter {
   private readonly customBaseURL?: string
 
   private readonly knownModels: readonly LlmModelInfo[] = [
-    { id: 'gpt-4o', name: 'GPT-4o (Omni)', description: 'Flagship multimodal flagship model' },
-    { id: 'gpt-4o-mini', name: 'GPT-4o Mini', description: 'Fast, cost-effective vision and text model' },
-    { id: 'o1', name: 'OpenAI o1', description: 'Deep reasoning and complex problem solving' },
-    { id: 'o3-mini', name: 'OpenAI o3-mini', description: 'High-speed reasoning model' },
-    { id: 'gpt-4.5-preview', name: 'GPT-4.5 Preview', description: 'Next-generation frontier model' },
+    { id: 'o3-mini', name: 'OpenAI o3-mini', description: 'High-speed reasoning model for coding and STEM' },
+    { id: 'o3', name: 'OpenAI o3', description: 'Frontier reasoning model with highest problem-solving benchmark' },
+    { id: 'o1', name: 'OpenAI o1', description: 'Deep reasoning model for complex multi-step reasoning' },
+    { id: 'o1-mini', name: 'OpenAI o1-mini', description: 'Fast, cost-effective reasoning model' },
+    { id: 'gpt-4.5-preview', name: 'GPT-4.5 Preview', description: 'Next-generation frontier knowledge and steerability' },
+    { id: 'gpt-4o', name: 'GPT-4o (Omni)', description: 'Flagship multimodal high-intelligence model' },
+    { id: 'gpt-4o-mini', name: 'GPT-4o Mini', description: 'Lightweight, fast multimodal intelligence' },
+    { id: 'chatgpt-4o-latest', name: 'ChatGPT-4o Latest', description: 'Continuously updated dynamic ChatGPT model' },
     { id: 'codex', name: 'OpenAI Codex', description: 'Code-specialized reasoning agent model' },
   ]
 
