@@ -57,8 +57,14 @@ export class QuotaController {
         const data = await res.json()
         const now = Date.now()
 
-        const providers: OAuthProviderType[] = ['codex', 'antigravity', 'grok']
-        for (const p of providers) {
+        const receivedProviders = Object.keys(data) as OAuthProviderType[]
+        for (const p of Array.from(this.state.metrics.keys())) {
+          if (!receivedProviders.includes(p)) {
+            this.state.metrics.delete(p)
+          }
+        }
+
+        for (const p of receivedProviders) {
           const info = data[p]
           if (info && info.connected) {
             this.state.metrics.set(p, {

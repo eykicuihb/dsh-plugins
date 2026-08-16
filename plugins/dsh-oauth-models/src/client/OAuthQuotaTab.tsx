@@ -22,23 +22,18 @@ export function OAuthQuotaTab({
     })
   }, [controller])
 
-  const codexMetrics: QuotaMetrics = state.metrics.get('codex') || {
-    provider: 'codex',
-    status: 'unauthorized',
-    lastUpdated: Date.now(),
+  const getProviderMeta = (provider: OAuthProviderType) => {
+    if (provider === 'codex') {
+      return { title: t.codexTitle, desc: t.codexDesc }
+    }
+    if (provider === 'grok') {
+      return { title: t.grokTitle, desc: t.grokDesc }
+    }
+    return { title: t.antigravityTitle, desc: t.antigravityDesc }
   }
 
-  const antigravityMetrics: QuotaMetrics = state.metrics.get('antigravity') || {
-    provider: 'antigravity',
-    status: 'unauthorized',
-    lastUpdated: Date.now(),
-  }
-
-  const grokMetrics: QuotaMetrics = state.metrics.get('grok') || {
-    provider: 'grok',
-    status: 'unauthorized',
-    lastUpdated: Date.now(),
-  }
+  // Active providers list from backend
+  const activeProviders = Array.from(state.metrics.keys())
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', padding: '12px 0' }}>
@@ -82,7 +77,7 @@ export function OAuthQuotaTab({
         </button>
       </div>
 
-      {/* Grid of 3 Subscription Cards */}
+      {/* Grid of Active Subscription Cards */}
       <div
         style={{
           display: 'grid',
@@ -90,35 +85,27 @@ export function OAuthQuotaTab({
           gap: '16px',
         }}
       >
-        <QuotaCard
-          metrics={codexMetrics}
-          title={t.codexTitle}
-          description={t.codexDesc}
-          isRefreshing={state.isRefreshing || state.isLoggingIn === 'codex'}
-          onRefresh={() => controller.refreshProvider('codex')}
-          onLogin={() => controller.startLogin('codex')}
-          onDisconnect={() => controller.disconnect('codex')}
-        />
+        {activeProviders.map((p) => {
+          const metrics: QuotaMetrics = state.metrics.get(p) || {
+            provider: p,
+            status: 'unauthorized',
+            lastUpdated: Date.now(),
+          }
+          const { title, desc } = getProviderMeta(p)
 
-        <QuotaCard
-          metrics={antigravityMetrics}
-          title={t.antigravityTitle}
-          description={t.antigravityDesc}
-          isRefreshing={state.isRefreshing || state.isLoggingIn === 'antigravity'}
-          onRefresh={() => controller.refreshProvider('antigravity')}
-          onLogin={() => controller.startLogin('antigravity')}
-          onDisconnect={() => controller.disconnect('antigravity')}
-        />
-
-        <QuotaCard
-          metrics={grokMetrics}
-          title={t.grokTitle}
-          description={t.grokDesc}
-          isRefreshing={state.isRefreshing || state.isLoggingIn === 'grok'}
-          onRefresh={() => controller.refreshProvider('grok')}
-          onLogin={() => controller.startLogin('grok')}
-          onDisconnect={() => controller.disconnect('grok')}
-        />
+          return (
+            <QuotaCard
+              key={p}
+              metrics={metrics}
+              title={title}
+              description={desc}
+              isRefreshing={state.isRefreshing || state.isLoggingIn === p}
+              onRefresh={() => controller.refreshProvider(p)}
+              onLogin={() => controller.startLogin(p)}
+              onDisconnect={() => controller.disconnect(p)}
+            />
+          )
+        })}
       </div>
     </div>
   )

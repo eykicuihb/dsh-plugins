@@ -30,7 +30,7 @@ export const OAuthModelsConfigSchema: z<OAuthModelsConfig> = z.object({
       defaultModel: z.string().description('Optional default Codex model'),
     }),
     antigravity: z.object({
-      enabled: z.boolean().default(true).description('Enable Google Antigravity OAuth provider'),
+      enabled: z.boolean().default(false).description('Enable Google Antigravity OAuth provider (Disabled by default)'),
       customBaseURL: z.string().description('Custom API Base URL for CloudCode PA endpoint'),
       defaultModel: z.string().description('Optional default Antigravity model'),
     }),

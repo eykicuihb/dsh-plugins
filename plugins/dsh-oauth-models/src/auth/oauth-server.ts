@@ -40,6 +40,7 @@ function formatChineseDate(input: string | number | Date): string {
 
 export class OAuthServer {
   private readonly tokenStore: TokenStore
+  private readonly enableAntigravity: boolean
   private controlServer: http.Server | null = null
   private readonly callbackServers = new Map<number, http.Server>()
   private readonly activeSessions = new Map<string, { provider: OAuthProviderType; verifier: string }>()
@@ -72,8 +73,9 @@ export class OAuthServer {
     path: '/callback',
   }
 
-  constructor(tokenStore: TokenStore) {
+  constructor(tokenStore: TokenStore, enableAntigravity: boolean = false) {
     this.tokenStore = tokenStore
+    this.enableAntigravity = enableAntigravity
   }
 
   public async start(): Promise<void> {
@@ -98,7 +100,9 @@ export class OAuthServer {
 
     // 2. Start provider-specific callback servers
     await this.startCallbackServer(1455, this.codexConfig.path, 'codex')
-    await this.startCallbackServer(51121, this.antigravityConfig.path, 'antigravity')
+    if (this.enableAntigravity) {
+      await this.startCallbackServer(51121, this.antigravityConfig.path, 'antigravity')
+    }
     await this.startCallbackServer(56121, this.grokConfig.path, 'grok')
   }
 
@@ -143,7 +147,7 @@ export class OAuthServer {
   }
 
   /**
-   * 100% Dynamic Quota from Google Antigravity Remote API (Split into Gemini vs Non-Gemini)
+   * 100% Dynamic Quota from Google Antigravity Remote API
    */
   private async fetchAntigravityLiveQuota(token: OAuthTokenData): Promise<QuotaWindowDetail[]> {
     const quotaWindows: QuotaWindowDetail[] = []
@@ -320,14 +324,14 @@ export class OAuthServer {
     // 1. GET /oauth/status or GET /oauth/quota
     if (url.pathname === '/oauth/status' || url.pathname === '/oauth/quota') {
       const codexToken = this.tokenStore.loadToken('codex')
-      const antigravityToken = this.tokenStore.loadToken('antigravity')
+      const antigravityToken = this.enableAntigravity ? this.tokenStore.loadToken('antigravity') : null
       const grokToken = this.tokenStore.loadToken('grok')
 
       const isCodexConnected = Boolean(codexToken?.accessToken && (codexToken?.expiresAt ? codexToken.expiresAt > Date.now() : true))
       const isAntigravityConnected = Boolean(antigravityToken?.accessToken && (antigravityToken?.expiresAt ? antigravityToken.expiresAt > Date.now() : true))
       const isGrokConnected = Boolean(grokToken?.accessToken && (grokToken?.expiresAt ? grokToken.expiresAt > Date.now() : true))
 
-      // 100% Dynamic Quota fetching concurrently for all active providers
+      // 100% Dynamic Quota fetching concurrently for active providers
       const [antigravityWindows, grokWindows, codexLive] = await Promise.all([
         isAntigravityConnected && antigravityToken
           ? this.fetchAntigravityLiveQuota(antigravityToken)
@@ -340,21 +344,13 @@ export class OAuthServer {
           : Promise.resolve({ quotaWindows: [] }),
       ])
 
-      res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({
+      const responsePayload: Record<string, any> = {
         codex: {
           connected: isCodexConnected,
           email: isCodexConnected ? (codexToken?.accountEmail || 'ChatGPT User') : undefined,
           plan: isCodexConnected ? (codexLive.planType || codexToken?.subscriptionTier || 'ChatGPT Plus / Pro') : undefined,
           expiresAt: codexToken?.expiresAt,
           quotaWindows: isCodexConnected && codexLive.quotaWindows.length > 0 ? codexLive.quotaWindows : undefined,
-        },
-        antigravity: {
-          connected: isAntigravityConnected,
-          email: isAntigravityConnected ? (antigravityToken?.accountEmail || 'Google User') : undefined,
-          plan: isAntigravityConnected ? (antigravityToken?.subscriptionTier || 'Google CloudCode PA') : undefined,
-          expiresAt: antigravityToken?.expiresAt,
-          quotaWindows: isAntigravityConnected && antigravityWindows.length > 0 ? antigravityWindows : undefined,
         },
         grok: {
           connected: isGrokConnected,
@@ -363,7 +359,20 @@ export class OAuthServer {
           expiresAt: grokToken?.expiresAt,
           quotaWindows: isGrokConnected && grokWindows.length > 0 ? grokWindows : undefined,
         },
-      }))
+      }
+
+      if (this.enableAntigravity) {
+        responsePayload.antigravity = {
+          connected: isAntigravityConnected,
+          email: isAntigravityConnected ? (antigravityToken?.accountEmail || 'Google User') : undefined,
+          plan: isAntigravityConnected ? (antigravityToken?.subscriptionTier || 'Google CloudCode PA') : undefined,
+          expiresAt: antigravityToken?.expiresAt,
+          quotaWindows: isAntigravityConnected && antigravityWindows.length > 0 ? antigravityWindows : undefined,
+        }
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(responsePayload))
       return
     }
 
