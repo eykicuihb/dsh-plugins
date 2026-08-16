@@ -15,17 +15,18 @@ export interface OAuthTokenData {
   tokenType?: string
   accountEmail?: string
   accountName?: string
+  accountId?: string
   subscriptionTier?: string
   customEndpoint?: string
   updatedAt: number
 }
 
-/** Rate limit window details */
-export interface RateLimitWindow {
-  limit: number
-  remaining: number
-  resetInSeconds: number
-  unit: 'requests' | 'tokens' | 'sliding_window'
+/** Specific Model Quota breakdown (e.g. Gemini 3.6 Flash vs Claude Sonnet 4.6) */
+export interface ModelQuotaDetail {
+  modelId: string
+  name: string
+  remainingPercentage: number
+  resetTime?: string
 }
 
 /** Real-time quota and subscription status */
@@ -35,16 +36,17 @@ export interface QuotaMetrics {
   accountEmail?: string
   accountName?: string
   subscriptionTier?: string
-  
+  modelQuotas?: ModelQuotaDetail[]
+
   /** Requests remaining in the primary quota window */
   requestsLimit?: number
   requestsRemaining?: number
   requestsResetSeconds?: number
-  
+
   /** Token or TPM limit */
   tokensLimit?: number
   tokensRemaining?: number
-  
+
   /** RPM / TPM current load */
   rateLimits?: {
     rpmLimit?: number
@@ -52,44 +54,14 @@ export interface QuotaMetrics {
     tpmLimit?: number
     tpmRemaining?: number
   }
-  
+
   tokenExpiresAt?: number
   lastUpdated: number
   errorMessage?: string
 }
 
-/** Model info exposed by the OAuth providers */
-export interface OAuthModelDefinition {
-  id: string
-  name: string
-  contextWindow: number
-  maxOutputTokens: number
-  supportsReasoning?: boolean
-  supportsVision?: boolean
-  supportsTools?: boolean
-  defaultReasoningEffort?: 'low' | 'medium' | 'high'
-}
-
-/** Configuration options for the OAuth plugin */
-export interface OAuthPluginConfig {
-  providers?: {
-    codex?: {
-      enabled?: boolean
-      customBaseURL?: string
-      defaultModel?: string
-    }
-    antigravity?: {
-      enabled?: boolean
-      customBaseURL?: string
-      projectId?: string
-      defaultModel?: string
-    }
-    grok?: {
-      enabled?: boolean
-      customBaseURL?: string
-      defaultModel?: string
-    }
-  }
-  quotaPollIntervalMs?: number
-  tokenRefreshLeadTimeMs?: number
+/** Quota controller response */
+export interface QuotaResponsePayload {
+  metrics: Record<OAuthProviderType, QuotaMetrics>
+  timestamp: number
 }

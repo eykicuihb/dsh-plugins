@@ -83,7 +83,7 @@ export function QuotaCard({
             style={{
               display: 'flex',
               flexDirection: 'column',
-              gap: '6px',
+              gap: '8px',
               padding: '12px 14px',
               borderRadius: '8px',
               backgroundColor: '#1e2330',
@@ -92,20 +92,85 @@ export function QuotaCard({
             }}
           >
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span style={{ color: '#94a3b8' }}>账号 (Account):</span>
+              <span style={{ color: '#94a3b8' }}>授权账号 (Account):</span>
               <strong style={{ color: '#38bdf8' }}>{metrics.accountEmail || '已授权账号'}</strong>
             </div>
             {metrics.subscriptionTier && (
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: '#94a3b8' }}>订阅 (Plan):</span>
+                <span style={{ color: '#94a3b8' }}>订阅套餐 (Tier):</span>
                 <strong style={{ color: '#a78bfa' }}>{metrics.subscriptionTier}</strong>
               </div>
             )}
           </div>
 
+          {/* Model Specific Quota Meters */}
+          {metrics.modelQuotas && metrics.modelQuotas.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#cbd5e1' }}>
+                模型实时余量 (Live Model Quotas):
+              </span>
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '6px',
+                  maxHeight: '180px',
+                  overflowY: 'auto',
+                  paddingRight: '4px',
+                }}
+              >
+                {metrics.modelQuotas.map((mq) => {
+                  const pct = Math.max(0, Math.min(100, mq.remainingPercentage))
+                  const barColor = pct > 50 ? '#10b981' : pct > 20 ? '#f59e0b' : '#ef4444'
+                  return (
+                    <div
+                      key={mq.modelId}
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '3px',
+                        padding: '6px 8px',
+                        borderRadius: '6px',
+                        backgroundColor: '#13161f',
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.78rem' }}>
+                        <span style={{ color: '#e2e8f0', fontWeight: 500 }}>{mq.name}</span>
+                        <span style={{ color: barColor, fontWeight: 600 }}>{pct}% 余量</span>
+                      </div>
+                      <div
+                        style={{
+                          width: '100%',
+                          height: '4px',
+                          borderRadius: '2px',
+                          backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                          overflow: 'hidden',
+                        }}
+                      >
+                        <div
+                          style={{
+                            width: `${pct}%`,
+                            height: '100%',
+                            backgroundColor: barColor,
+                            transition: 'width 0.3s ease',
+                          }}
+                        />
+                      </div>
+                      {mq.resetTime && (
+                        <span style={{ fontSize: '0.7rem', color: '#64748b' }}>
+                          重置时间: {new Date(mq.resetTime).toLocaleTimeString()}
+                        </span>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 'auto', paddingTop: '8px' }}>
             <span style={{ fontSize: '0.8rem', color: '#10b981', display: 'flex', alignItems: 'center', gap: '4px' }}>
-              ✨ OAuth 授权已激活，模型目录实时同步中
+              ✨ 动态模型目录与思考链已同步
             </span>
             <div style={{ display: 'flex', gap: '8px' }}>
               <button
@@ -119,15 +184,15 @@ export function QuotaCard({
                   backgroundColor: 'transparent',
                   color: '#cbd5e1',
                   fontSize: '0.8rem',
-                  fontWeight: 500,
                   cursor: isRefreshing ? 'not-allowed' : 'pointer',
                 }}
               >
-                {isRefreshing ? '...' : '刷新'}
+                {isRefreshing ? '刷新中…' : '刷新额度'}
               </button>
               <button
                 type="button"
                 onClick={onDisconnect}
+                disabled={isRefreshing}
                 style={{
                   padding: '6px 12px',
                   borderRadius: '6px',
@@ -135,56 +200,57 @@ export function QuotaCard({
                   backgroundColor: 'rgba(239, 68, 68, 0.1)',
                   color: '#f87171',
                   fontSize: '0.8rem',
-                  fontWeight: 500,
-                  cursor: 'pointer',
+                  cursor: isRefreshing ? 'not-allowed' : 'pointer',
                 }}
               >
-                退出登录
+                断开
               </button>
             </div>
           </div>
         </>
       ) : (
-        /* Unauthorized State Content */
+        /* Unauthorized / Disconnected State */
         <div
           style={{
             display: 'flex',
             flexDirection: 'column',
-            gap: '12px',
             alignItems: 'center',
             justifyContent: 'center',
-            padding: '20px 14px',
+            padding: '24px 16px',
             borderRadius: '8px',
             backgroundColor: '#1e2330',
-            border: '1px dashed rgba(255, 255, 255, 0.1)',
+            border: '1px dashed rgba(255, 255, 255, 0.12)',
+            gap: '12px',
             textAlign: 'center',
           }}
         >
-          <p style={{ margin: 0, fontSize: '0.85rem', color: '#94a3b8' }}>
-            尚未连接 OAuth 账号。点击下方按钮通过浏览器完成官方授权登录。
-          </p>
+          <span style={{ fontSize: '1.5rem' }}>🔐</span>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+            <span style={{ fontSize: '0.88rem', fontWeight: 600, color: '#f8fafc' }}>
+              未连接 OAuth 账号
+            </span>
+            <span style={{ fontSize: '0.78rem', color: '#94a3b8' }}>
+              登录后即可零 API 费用直连订阅模型并实时查看配额与思考链
+            </span>
+          </div>
           <button
             type="button"
             onClick={onLogin}
             disabled={isRefreshing}
             style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '8px',
-              padding: '10px 20px',
-              borderRadius: '8px',
+              marginTop: '4px',
+              padding: '8px 16px',
+              borderRadius: '6px',
               border: 'none',
-              backgroundColor: '#2563eb',
+              backgroundColor: '#3b82f6',
               color: '#ffffff',
-              fontSize: '0.9rem',
               fontWeight: 600,
+              fontSize: '0.82rem',
               cursor: isRefreshing ? 'not-allowed' : 'pointer',
-              boxShadow: '0 2px 6px rgba(37, 99, 235, 0.3)',
-              transition: 'background-color 0.2s',
+              boxShadow: '0 2px 4px rgba(59, 130, 246, 0.3)',
             }}
           >
-            {isRefreshing ? '正在等待浏览器授权...' : '🔑 OAuth 浏览器登录'}
+            {isRefreshing ? '正在启动登录…' : '🔑 OAuth 浏览器登录'}
           </button>
         </div>
       )}

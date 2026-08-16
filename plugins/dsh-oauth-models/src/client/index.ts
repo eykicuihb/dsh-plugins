@@ -1,6 +1,7 @@
 /**
  * Client entry for @eykicuihb/dsh-oauth-models
- * Registers the OAuth Quota Dashboard tab into WebUI settings slots.
+ * Registers the Live OAuth Quota tab into conversation.view (next to 对话 / 轨迹)
+ * and settings.plugins.tab slots.
  */
 
 import React from 'react'
@@ -22,13 +23,36 @@ export function apply(ctx: any): void {
   // Register localization dictionary
   if (ctx.locale?.register) {
     ctx.effect(
-      () => ctx.locale.register('settings.plugins.oauth', { zh, en }),
+      () => ctx.locale.register('oauth-quota', { zh, en }),
       'dsh-oauth-models: quota locales',
     )
   }
 
-  // Inject the OAuth Quota Tab into settings.plugins.tab slot
   if (ctx.slots?.inject) {
+    // 1. Injected as a top-level tab right next to "对话" (Chat) and "轨迹" (Trajectory)
+    ctx.slots.inject('conversation.view', () =>
+      ctx.slots.register(
+        {
+          name: 'conversation.view',
+          id: 'oauth-quota',
+          order: 20,
+          locale: 'oauth-quota',
+          label: () => (ctx.locale?.getLocale?.()?.active === 'en' ? 'Live Quota' : '实时额度'),
+          inject: (sessionId: any) => ({ sessionId }),
+        },
+        () =>
+          React.createElement(
+            'div',
+            { style: { width: '100%', height: '100%', overflowY: 'auto', padding: '16px 24px', boxSizing: 'border-box' } },
+            React.createElement(OAuthQuotaTab, {
+              controller,
+              locale: ctx.locale?.getLocale?.()?.active || 'zh',
+            }),
+          ),
+      ),
+    )
+
+    // 2. Also injected into settings.plugins.tab for settings management
     ctx.slots.inject('settings.plugins.tab', () =>
       ctx.slots.register(
         {
@@ -36,12 +60,13 @@ export function apply(ctx: any): void {
           id: 'oauth-quota',
           order: 25,
           label: () => (ctx.locale?.getLocale?.()?.active === 'en' ? en.tabTitle : zh.tabTitle),
-          locale: 'settings.plugins.oauth',
+          locale: 'oauth-quota',
         },
-        () => React.createElement(OAuthQuotaTab, {
-          controller,
-          locale: ctx.locale?.getLocale?.()?.active || 'zh',
-        }),
+        () =>
+          React.createElement(OAuthQuotaTab, {
+            controller,
+            locale: ctx.locale?.getLocale?.()?.active || 'zh',
+          }),
       ),
     )
   }
