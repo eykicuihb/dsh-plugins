@@ -7,6 +7,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { Config } from './config.ts'
 import type { OAuthPluginConfig } from './types.ts'
 import { TokenStore } from './auth/token-store.ts'
+import { OAuthServer } from './auth/oauth-server.ts'
 import { QuotaService } from './quota/quota-service.ts'
 import { CodexAdapter } from './adapters/codex-adapter.ts'
 import { AntigravityAdapter } from './adapters/antigravity-adapter.ts'
@@ -15,6 +16,7 @@ import { GrokAdapter } from './adapters/grok-adapter.ts'
 export { Config } from './config.ts'
 export type { OAuthPluginConfig, OAuthProviderType, QuotaMetrics, OAuthTokenData } from './types.ts'
 export { TokenStore } from './auth/token-store.ts'
+export { OAuthServer } from './auth/oauth-server.ts'
 export { QuotaService } from './quota/quota-service.ts'
 export { CodexAdapter } from './adapters/codex-adapter.ts'
 export { AntigravityAdapter } from './adapters/antigravity-adapter.ts'
@@ -26,6 +28,21 @@ export const inject = ['llm']
 export function apply(ctx: Context, config: OAuthPluginConfig = {}): void {
   const tokenStore = new TokenStore()
   const quotaService = new QuotaService(tokenStore)
+  const oauthServer = new OAuthServer(tokenStore)
+
+  // 0. Start local OAuth 2.0 PKCE Server for interactive login
+  oauthServer.start().catch((err) => {
+    console.error('[dsh-oauth-models] Failed to start OAuth server:', err)
+  })
+
+  // Register settings namespace for DSH API proxy
+  if (typeof (ctx.llm as any).registerConfigurableProviders === 'function') {
+    ;(ctx.llm as any).registerConfigurableProviders([
+      { provider: 'codex', displayName: 'OpenAI Codex (OAuth)', settingsNs: 'oauth-models', settingsPath: [] },
+      { provider: 'antigravity', displayName: 'Google Antigravity (OAuth)', settingsNs: 'oauth-models', settingsPath: [] },
+      { provider: 'grok', displayName: 'xAI Grok (OAuth)', settingsNs: 'oauth-models', settingsPath: [] },
+    ])
+  }
 
   const codexConfig = config.providers?.codex
   const antigravityConfig = config.providers?.antigravity
@@ -57,5 +74,6 @@ export function apply(ctx: Context, config: OAuthPluginConfig = {}): void {
   ctx.effect(() => () => {
     stopPolling()
     quotaService.dispose()
-  }, 'dsh-oauth-models: quota polling')
+    oauthServer.stop()
+  }, 'dsh-oauth-models: quota polling and oauth server')
 }

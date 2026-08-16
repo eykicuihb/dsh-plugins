@@ -88,9 +88,9 @@ export function OAuthQuotaTab({
           metrics={codexMetrics}
           title={t.codexTitle}
           description={t.codexDesc}
-          isRefreshing={state.isRefreshing}
+          isRefreshing={state.isRefreshing || state.isLoggingIn === 'codex'}
           onRefresh={() => controller.refreshProvider('codex')}
-          onLogin={() => alert('Initiating OpenAI Codex PKCE OAuth flow...')}
+          onLogin={() => controller.startLogin('codex')}
           onDisconnect={() => controller.disconnect('codex')}
         />
 
@@ -98,9 +98,9 @@ export function OAuthQuotaTab({
           metrics={antigravityMetrics}
           title={t.antigravityTitle}
           description={t.antigravityDesc}
-          isRefreshing={state.isRefreshing}
+          isRefreshing={state.isRefreshing || state.isLoggingIn === 'antigravity'}
           onRefresh={() => controller.refreshProvider('antigravity')}
-          onLogin={() => alert('Initiating Google CloudCode Antigravity OAuth flow...')}
+          onLogin={() => controller.startLogin('antigravity')}
           onDisconnect={() => controller.disconnect('antigravity')}
         />
 
@@ -108,9 +108,9 @@ export function OAuthQuotaTab({
           metrics={grokMetrics}
           title={t.grokTitle}
           description={t.grokDesc}
-          isRefreshing={state.isRefreshing}
+          isRefreshing={state.isRefreshing || state.isLoggingIn === 'grok'}
           onRefresh={() => controller.refreshProvider('grok')}
-          onLogin={() => alert('Initiating xAI Grok OAuth flow...')}
+          onLogin={() => controller.startLogin('grok')}
           onDisconnect={() => controller.disconnect('grok')}
         />
       </div>
