@@ -10,7 +10,7 @@ import { GrokAdapter } from './adapters/grok-adapter.ts'
 export const name = 'dsh-oauth-models'
 export const Config = OAuthModelsConfigSchema
 
-export const using = ['llm'] as const
+export const inject = ['llm']
 
 export function apply(ctx: Context, config: OAuthModelsConfig): void {
   const tokenStore = new TokenStore()
