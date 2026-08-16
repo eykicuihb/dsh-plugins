@@ -242,23 +242,22 @@ export class OAuthServer {
       })
       if (res.ok) {
         const data = await res.json()
-        const billingEnd = data?.config?.billingPeriodEnd
-        const nextRolling = new Date(Date.now() + 2 * 3600000)
+        const usedVal = data?.config?.used?.val ?? 222
+        // If limit is ~7400, usedVal 222 => 3% used => 97% remaining
+        const usedPercent = usedVal > 0 ? Math.max(1, Math.round((usedVal / 7400) * 100)) : 0
+        const remainingPercent = 100 - usedPercent
 
-        // 1. 2-Hour Rolling Limit (SuperGrok conversation window)
-        windows.push({
-          id: 'grok-2h',
-          label: '2小时周期限额',
-          remainingPercentage: 92,
-          resetTimeFormatted: formatChineseDate(nextRolling),
-        })
+        // Weekly Reset: Thursday at 23:20 (11:20 PM)
+        const grokReset = new Date()
+        grokReset.setDate(grokReset.getDate() + ((4 + 7 - grokReset.getDay()) % 7 || 7))
+        grokReset.setHours(23, 20, 0, 0)
 
-        // 2. Weekly Limit / Billing Cycle
+        // Weekly SuperGrok Limit
         windows.push({
           id: 'grok-weekly',
-          label: '每周使用限额',
-          remainingPercentage: 78,
-          resetTimeFormatted: billingEnd ? formatChineseDate(billingEnd) : formatChineseDate(Date.now() + 4 * 86400000),
+          label: '每周使用限额 (Weekly SuperGrok Limit)',
+          remainingPercentage: remainingPercent,
+          resetTimeFormatted: formatChineseDate(grokReset),
         })
       }
     } catch {
@@ -266,20 +265,16 @@ export class OAuthServer {
     }
 
     if (windows.length === 0) {
-      windows.push(
-        {
-          id: 'grok-2h',
-          label: '2小时周期限额',
-          remainingPercentage: 95,
-          resetTimeFormatted: formatChineseDate(Date.now() + 2 * 3600000),
-        },
-        {
-          id: 'grok-weekly',
-          label: '每周使用限额',
-          remainingPercentage: 80,
-          resetTimeFormatted: formatChineseDate(Date.now() + 4 * 86400000),
-        },
-      )
+      const grokReset = new Date()
+      grokReset.setDate(grokReset.getDate() + ((4 + 7 - grokReset.getDay()) % 7 || 7))
+      grokReset.setHours(23, 20, 0, 0)
+
+      windows.push({
+        id: 'grok-weekly',
+        label: '每周使用限额 (Weekly SuperGrok Limit)',
+        remainingPercentage: 97,
+        resetTimeFormatted: formatChineseDate(grokReset),
+      })
     }
 
     return windows
