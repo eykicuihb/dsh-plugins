@@ -1,6 +1,6 @@
 /**
- * Google Antigravity (Gemini) OAuth Adapter
- * Connects to Google Gemini models using CloudCode/Antigravity OAuth tokens or API keys.
+ * Google Antigravity (Gemini / Claude via CloudCode PA) OAuth Adapter
+ * Connects to Google Antigravity models using CloudCode/Antigravity OAuth tokens or API keys.
  */
 
 import { LlmAdapter } from '@deepseek-ai/dsh-llm'
@@ -20,14 +20,12 @@ export class AntigravityAdapter extends LlmAdapter {
   private readonly customBaseURL?: string
 
   private readonly knownModels: readonly LlmModelInfo[] = [
-    { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro (Thinking)', description: 'Flagship hybrid reasoning, coding, and 2M multi-modal context' },
+    { id: 'gemini-3.0-pro', name: 'Gemini 3.0 Pro (Frontier)', description: 'Next-generation frontier reasoning, software synthesis, and 2M+ multimodal context' },
+    { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro (Thinking)', description: 'Flagship hybrid reasoning, STEM reasoning, and 2M token context' },
     { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash (Thinking)', description: 'Ultra-fast low-latency frontier hybrid reasoning model' },
-    { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', description: 'Next-generation fast multimodal agent and coding model' },
-    { id: 'gemini-2.0-flash-thinking-exp', name: 'Gemini 2.0 Flash Thinking Exp', description: 'Real-time thinking visualization and complex logic' },
-    { id: 'gemini-2.0-pro-exp-02-05', name: 'Gemini 2.0 Pro Exp', description: 'Frontier experimental model specialized in advanced coding' },
-    { id: 'gemini-exp-1206', name: 'Gemini Exp 1206', description: 'High-intelligence experimental reasoning checkpoint' },
-    { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro', description: '2M token ultra-long context multimodal reasoning model' },
-    { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash', description: 'Fast long context multimodal model' },
+    { id: 'gemini-2.5-flash-thinking', name: 'Gemini 2.5 Flash Thinking', description: 'Deep chain-of-thought logic visualization and complex problem solving' },
+    { id: 'claude-3-7-sonnet-thought', name: 'Claude 3.7 Sonnet (Thinking)', description: 'State-of-the-art hybrid reasoning and agentic coding via Antigravity CloudCode PA' },
+    { id: 'claude-3-5-sonnet', name: 'Claude 3.5 Sonnet', description: 'Frontier software engineering and architectural reasoning' },
   ]
 
   constructor(tokenStore: TokenStore, quotaService?: QuotaService, customBaseURL?: string) {
@@ -41,14 +39,14 @@ export class AntigravityAdapter extends LlmAdapter {
     return {
       id: 'antigravity',
       name: 'Google Antigravity (OAuth)',
-      description: 'Google Gemini frontier models authenticated via Antigravity OAuth',
+      description: 'Google Antigravity & CloudCode PA frontier models authenticated via OAuth',
     }
   }
 
   public override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
     const modelsMap = new Map<string, LlmModelInfo>()
 
-    // 1. Preload curated frontier Gemini 2.5 / 2.0 models (ensuring optimal display order)
+    // 1. Preload curated frontier Gemini 3.0 / 2.5 / Claude 3.7 models
     for (const m of this.knownModels) {
       modelsMap.set(m.id, { ...m, provider })
     }
@@ -69,13 +67,13 @@ export class AntigravityAdapter extends LlmAdapter {
           const data = (await res.json()) as { models?: Array<{ name: string; displayName?: string; description?: string }> }
           for (const item of data?.models || []) {
             const id = item.name.replace(/^models\//, '')
-            if (id.startsWith('gemini')) {
+            if (id.startsWith('gemini-3') || id.startsWith('gemini-2.5') || id.startsWith('claude')) {
               if (!modelsMap.has(id)) {
                 modelsMap.set(id, {
                   provider,
                   id,
-                  name: item.displayName || `Gemini ${id}`,
-                  description: item.description || `Google ${id} (Live synced from account)`,
+                  name: item.displayName || id,
+                  description: item.description || `Antigravity ${id} (Live synced)`,
                 })
               }
             }
@@ -90,15 +88,16 @@ export class AntigravityAdapter extends LlmAdapter {
   }
 
   public override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
-    const isThinking = model.includes('thinking') || model.includes('2.5')
+    const isThinking = model.includes('thinking') || model.includes('thought') || model.includes('2.5') || model.includes('3.0')
+    const isClaude = model.includes('claude')
     return Promise.resolve({
       provider,
       id: model,
-      name: model,
+      name: this.knownModels.find(m => m.id === model)?.name || model,
       context: {
-        contextWindow: model.includes('1.5-pro') ? 2000000 : 1000000,
+        contextWindow: isClaude ? 200000 : 2000000,
       },
-      defaultMaxTokens: model.includes('flash') && !isThinking ? 8192 : 65536,
+      defaultMaxTokens: 65536,
       reasoning: isThinking
         ? {
             efforts: [
@@ -163,11 +162,11 @@ export class AntigravityAdapter extends LlmAdapter {
 
     if (!response.ok) {
       const errText = await response.text()
-      throw new Error(`Google Gemini API error (${response.status}): ${errText}`)
+      throw new Error(`Google Antigravity API error (${response.status}): ${errText}`)
     }
 
     if (!response.body) {
-      throw new Error('No response body received from Gemini API.')
+      throw new Error('No response body received from Antigravity API.')
     }
 
     const reader = response.body.getReader()

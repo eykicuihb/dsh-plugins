@@ -20,11 +20,10 @@ export class GrokAdapter extends LlmAdapter {
   private readonly customBaseURL?: string
 
   private readonly knownModels: readonly LlmModelInfo[] = [
-    { id: 'grok-3', name: 'Grok-3 (Flagship Reasoning)', description: 'xAI frontier flagship reasoning model with superior STEM, math, and coding' },
-    { id: 'grok-3-mini', name: 'Grok-3 Mini (Fast Thinking)', description: 'Fast, lightweight thinking model with high reasoning throughput' },
-    { id: 'grok-3-deepsearch', name: 'Grok-3 DeepSearch', description: 'Autonomous multi-agent deep search and structured reasoning' },
-    { id: 'grok-2-vision-1212', name: 'Grok-2 Vision', description: 'Multimodal vision model for diagrams, charts, and document analysis' },
-    { id: 'grok-2-1212', name: 'Grok-2', description: 'High-performance general coding and reasoning model' },
+    { id: 'grok-3', name: 'Grok-3 (Flagship Reasoning)', description: 'xAI flagship frontier reasoning model with highest STEM, math, and code solving' },
+    { id: 'grok-3-mini', name: 'Grok-3 Mini (Fast Thinking)', description: 'High-throughput lightweight reasoning model for agile coding loops' },
+    { id: 'grok-3-deepsearch', name: 'Grok-3 DeepSearch', description: 'Autonomous multi-agent deep research and structured factual reasoning' },
+    { id: 'grok-3-vision', name: 'Grok-3 Vision (Multimodal Frontier)', description: 'Frontier multimodal comprehension for high-resolution UI, diagrams, and video' },
   ]
 
   constructor(tokenStore: TokenStore, quotaService?: QuotaService, customBaseURL?: string) {
@@ -45,7 +44,7 @@ export class GrokAdapter extends LlmAdapter {
   public override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
     const modelsMap = new Map<string, LlmModelInfo>()
 
-    // 1. Preload curated frontier Grok-3 / Grok-2 models (ensuring optimal display order)
+    // 1. Preload curated frontier Grok-3 models
     for (const m of this.knownModels) {
       modelsMap.set(m.id, { ...m, provider })
     }
@@ -92,11 +91,11 @@ export class GrokAdapter extends LlmAdapter {
     return Promise.resolve({
       provider,
       id: model,
-      name: model,
+      name: this.knownModels.find(m => m.id === model)?.name || model,
       context: {
-        contextWindow: isReasoning ? 131072 : 65536,
+        contextWindow: 131072,
       },
-      defaultMaxTokens: isReasoning ? 32768 : 8192,
+      defaultMaxTokens: 32768,
       reasoning: isReasoning
         ? {
             efforts: [
