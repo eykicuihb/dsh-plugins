@@ -19,6 +19,39 @@ export interface ResolvedVlmOptions {
 }
 
 /**
+ * Sanitize observation text by stripping internal hidden thinking and reasoning tokens.
+ * Supports <think>...</think>, <thought>...</thought>, <reasoning>...</reasoning>,
+ * [THINK]...[/THINK], and handles edge cases such as unclosed tags.
+ */
+export function sanitizeVlmObservation(rawText: string): string {
+  if (!rawText || typeof rawText !== 'string') return ''
+
+  // 1. Strip complete paired thinking tags
+  let cleaned = rawText
+    .replace(/<think[\s\S]*?>[\s\S]*?<\/think>/gi, '')
+    .replace(/<thought[\s\S]*?>[\s\S]*?<\/thought>/gi, '')
+    .replace(/<reasoning[\s\S]*?>[\s\S]*?<\/reasoning>/gi, '')
+    .replace(/\[THINK\][\s\S]*?\[\/THINK\]/gi, '')
+    .trim()
+
+  // 2. If unclosed <think> or <thought> tag exists at start
+  if (/^<(?:think|thought|reasoning)[\s\S]*?>/i.test(cleaned)) {
+    cleaned = cleaned.replace(/^<(?:think|thought|reasoning)[\s\S]*?>/gi, '').trim()
+  }
+
+  // 3. Fallback: if stripping completely emptied the response (e.g. model ONLY output within <think>),
+  // strip only the XML tags themselves and keep inner text so we don't return an empty observation.
+  if (!cleaned) {
+    cleaned = rawText
+      .replace(/<\/?(?:think|thought|reasoning)[\s\S]*?>/gi, '')
+      .replace(/\[\/?THINK\]/gi, '')
+      .trim()
+  }
+
+  return cleaned || '未能从视觉模型获得有效的文本描述。'
+}
+
+/**
  * Resolve runtime options from merged plugin and user settings.
  */
 export async function resolveVlmOptions(config: Config, ctx?: Context): Promise<ResolvedVlmOptions> {
@@ -195,12 +228,20 @@ async function callOpenAiCompatibleVlm(params: OpenAiCallParams): Promise<VlmCal
   }
 
   const result = await response.json()
-  const content = result.choices?.[0]?.message?.content
-  const observation = typeof content === 'string'
-    ? content
-    : Array.isArray(content)
-      ? content.map(part => (part.type === 'text' ? part.text : JSON.stringify(part))).join('\n')
-      : '未能从视觉模型获得有效的文本描述。'
+  const message = result.choices?.[0]?.message
+  const content = message?.content
+
+  let rawObservation = ''
+  if (typeof content === 'string') {
+    rawObservation = content
+  } else if (Array.isArray(content)) {
+    rawObservation = content
+      .filter((part: any) => part.type === 'text' || typeof part.text === 'string')
+      .map((part: any) => part.text || JSON.stringify(part))
+      .join('\n')
+  }
+
+  const observation = sanitizeVlmObservation(rawObservation)
 
   return {
     observation,
@@ -275,11 +316,19 @@ async function callAnthropicVlm(params: AnthropicCallParams): Promise<VlmCallRes
 
   const result = await response.json()
   const content = result.content
-  const observation = Array.isArray(content)
-    ? content.map(block => (block.type === 'text' ? block.text : '')).join('\n').trim()
-    : typeof content === 'string'
-      ? content
-      : '未能从 Anthropic 获得有效的视觉分析结果。'
+
+  let rawObservation = ''
+  if (Array.isArray(content)) {
+    rawObservation = content
+      .filter((block: any) => block.type === 'text')
+      .map((block: any) => block.text)
+      .join('\n')
+      .trim()
+  } else if (typeof content === 'string') {
+    rawObservation = content
+  }
+
+  const observation = sanitizeVlmObservation(rawObservation)
 
   return {
     observation,
