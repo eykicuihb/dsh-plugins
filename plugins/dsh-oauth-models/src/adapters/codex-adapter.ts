@@ -2,7 +2,7 @@
  * OpenAI Codex OAuth Adapter
  * Connects to OpenAI models using Codex OAuth token via ChatGPT backend API.
  * 100% dynamically synchronizes model list from active OAuth remote session.
- * Fully supports system prompts, reasoning streams, tool definitions, and multi-turn tool calling.
+ * Fully supports system prompts, reasoning streams, tool definitions, and multi-turn parallel tool calling.
  */
 
 import fs from 'node:fs'
@@ -322,12 +322,15 @@ export class CodexAdapter extends LlmAdapter {
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
-    let hasReasoning = false
     let hasToolCalls = false
 
-    // Track active tool calls for Responses API
-    const activeToolCalls = new Map<string, { name: string; index: number }>()
-    let nextToolIndex = 1
+    let nextBlockIndex = 0
+    let textBlockIndex: number | null = null
+    let reasoningBlockIndex: number | null = null
+
+    // Track active tool calls by item_id (fc_...) and output_index
+    const toolCallByItemId = new Map<string, { callId: string; name: string; blockIndex: number }>()
+    const toolCallByOutputIndex = new Map<number, { callId: string; name: string; blockIndex: number }>()
 
     try {
       while (true) {
@@ -354,31 +357,43 @@ export class CodexAdapter extends LlmAdapter {
               // 1. ChatGPT Backend Responses API format
               if (parsed.type === 'response.output_text.delta' || parsed.type === 'response.text.delta') {
                 if (parsed.delta) {
-                  const textIndex = hasReasoning ? 1 : 0
-                  yield { type: 'text-delta', index: textIndex, text: parsed.delta }
+                  if (textBlockIndex === null) textBlockIndex = nextBlockIndex++
+                  yield { type: 'text-delta', index: textBlockIndex, text: parsed.delta }
                 }
               } else if (parsed.type === 'response.reasoning.delta' || parsed.type === 'response.thought.delta') {
                 if (parsed.delta) {
-                  hasReasoning = true
-                  yield { type: 'reasoning-delta', index: 0, text: parsed.delta }
+                  if (reasoningBlockIndex === null) reasoningBlockIndex = nextBlockIndex++
+                  yield { type: 'reasoning-delta', index: reasoningBlockIndex, text: parsed.delta }
                 }
               } else if (parsed.type === 'response.output_item.added' && parsed.item?.type === 'function_call') {
                 hasToolCalls = true
-                const callId = parsed.item.call_id || `call_${parsed.item.id || nextToolIndex}`
+                const itemId = parsed.item.id
+                const callId = parsed.item.call_id || `call_${itemId || nextBlockIndex}`
                 const wireName = parsed.item.name || ''
                 const origName = toolNameMap.get(wireName) || wireName.replace(/__/g, '.')
-                activeToolCalls.set(callId, { name: origName, index: nextToolIndex++ })
+                const blockIndex = nextBlockIndex++
+
+                const toolInfo = { callId, name: origName, blockIndex }
+                if (itemId) toolCallByItemId.set(itemId, toolInfo)
+                if (parsed.output_index !== undefined) toolCallByOutputIndex.set(parsed.output_index, toolInfo)
               } else if (parsed.type === 'response.function_call_arguments.delta') {
                 hasToolCalls = true
-                const callId = parsed.call_id || Array.from(activeToolCalls.keys())[0] || 'call_0'
-                const toolInfo = activeToolCalls.get(callId)
-                const origName = toolInfo?.name || 'tool'
-                const toolIdx = toolInfo?.index ?? nextToolIndex++
+                let toolInfo = (parsed.item_id && toolCallByItemId.get(parsed.item_id))
+                  || (parsed.output_index !== undefined && toolCallByOutputIndex.get(parsed.output_index))
+
+                if (!toolInfo) {
+                  const blockIndex = nextBlockIndex++
+                  const callId = parsed.call_id || parsed.item_id || `call_${blockIndex}`
+                  toolInfo = { callId, name: 'tool', blockIndex }
+                  if (parsed.item_id) toolCallByItemId.set(parsed.item_id, toolInfo)
+                  if (parsed.output_index !== undefined) toolCallByOutputIndex.set(parsed.output_index, toolInfo)
+                }
+
                 yield {
                   type: 'tool-call-delta',
-                  index: toolIdx + (hasReasoning ? 1 : 0),
-                  id: CallId(callId),
-                  name: origName,
+                  index: toolInfo.blockIndex,
+                  id: CallId(toolInfo.callId),
+                  name: toolInfo.name,
                   argumentsDelta: parsed.delta,
                 }
               } else if (parsed.type === 'response.completed' || parsed.type === 'response.done') {
@@ -391,23 +406,39 @@ export class CodexAdapter extends LlmAdapter {
               if (choice) {
                 const delta = choice.delta
                 if (delta?.reasoning_content) {
-                  hasReasoning = true
-                  yield { type: 'reasoning-delta', index: 0, text: delta.reasoning_content }
+                  if (reasoningBlockIndex === null) reasoningBlockIndex = nextBlockIndex++
+                  yield { type: 'reasoning-delta', index: reasoningBlockIndex, text: delta.reasoning_content }
                 }
                 if (delta?.content) {
-                  const textIndex = hasReasoning ? 1 : 0
-                  yield { type: 'text-delta', index: textIndex, text: delta.content }
+                  if (textBlockIndex === null) textBlockIndex = nextBlockIndex++
+                  yield { type: 'text-delta', index: textBlockIndex, text: delta.content }
                 }
                 if (delta?.tool_calls) {
                   hasToolCalls = true
                   for (const tc of delta.tool_calls) {
-                    const wireName = tc.function?.name
-                    const origName = wireName ? (toolNameMap.get(wireName) || wireName.replace(/__/g, '.')) : undefined
+                    const tcIndex = tc.index ?? 0
+                    let toolInfo = toolCallByOutputIndex.get(tcIndex)
+                    if (!toolInfo) {
+                      const wireName = tc.function?.name
+                      const origName = wireName ? (toolNameMap.get(wireName) || wireName.replace(/__/g, '.')) : 'tool'
+                      toolInfo = {
+                        callId: tc.id || `call_${tcIndex}`,
+                        name: origName,
+                        blockIndex: nextBlockIndex++,
+                      }
+                      toolCallByOutputIndex.set(tcIndex, toolInfo)
+                    } else if (tc.function?.name) {
+                      const wireName = tc.function.name
+                      toolInfo.name = toolNameMap.get(wireName) || wireName.replace(/__/g, '.')
+                    }
+                    if (tc.id) {
+                      toolInfo.callId = tc.id
+                    }
                     yield {
                       type: 'tool-call-delta',
-                      index: (tc.index ?? 0) + (hasReasoning ? 2 : 1),
-                      id: CallId(tc.id || `call_${tc.index || 0}`),
-                      ...(origName ? { name: origName } : {}),
+                      index: toolInfo.blockIndex,
+                      id: CallId(toolInfo.callId),
+                      name: toolInfo.name,
                       argumentsDelta: tc.function?.arguments || '',
                     }
                   }
