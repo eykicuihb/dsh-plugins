@@ -2,8 +2,8 @@
  * OpenAI Codex OAuth Adapter
  * Connects to OpenAI models using Codex OAuth token via ChatGPT backend API.
  * 100% dynamically synchronizes model list from active OAuth remote session.
- * Fully supports system prompts, reasoning streams, tool definitions, and multi-turn parallel tool calling.
- * Optimized for 100% deterministic prefix KV cache hits across all turns.
+ * Fully supports system prompts, reasoning streams, tool definitions, multi-turn parallel tool calling,
+ * and exact token accounting / usage reporting for accurate real-time session statistics.
  */
 
 import fs from 'node:fs'
@@ -16,6 +16,7 @@ import type {
   LlmProviderInfo,
   LlmResolvedModelInfo,
   StreamChunk,
+  TokenUsage,
 } from '@deepseek-ai/dsh-llm'
 import type { TokenStore } from '../auth/token-store.ts'
 import type { QuotaService } from '../quota/quota-service.ts'
@@ -35,6 +36,35 @@ interface ActiveToolCallState {
   name: string
   blockIndex: number
   accumulatedArgs: string
+}
+
+function mapWireUsage(usage: any): TokenUsage {
+  const cached =
+    usage.input_tokens_details?.cached_tokens ??
+    usage.input_token_details?.cached_tokens ??
+    usage.prompt_tokens_details?.cached_tokens ??
+    usage.prompt_cache_hit_tokens ??
+    0
+  const cacheWrite =
+    usage.input_tokens_details?.cache_write_tokens ??
+    usage.input_token_details?.cache_write_tokens ??
+    usage.prompt_tokens_details?.cache_write_tokens ??
+    0
+  const reasoning =
+    usage.output_tokens_details?.reasoning_tokens ??
+    usage.output_token_details?.reasoning_tokens ??
+    usage.completion_tokens_details?.reasoning_tokens ??
+    0
+  const totalInput = usage.input_tokens ?? usage.prompt_tokens ?? 0
+  const totalOutput = usage.output_tokens ?? usage.completion_tokens ?? 0
+
+  return {
+    inputTokens: Math.max(0, totalInput - cached),
+    outputTokens: totalOutput,
+    ...(cached > 0 ? { cacheReadTokens: cached } : {}),
+    ...(cacheWrite > 0 ? { cacheWriteTokens: cacheWrite } : {}),
+    ...(reasoning > 0 ? { reasoningTokens: reasoning } : {}),
+  }
 }
 
 export class CodexAdapter extends LlmAdapter {
@@ -218,14 +248,15 @@ export class CodexAdapter extends LlmAdapter {
         }
       }
 
-      // Static tool schema optimization: stable prefix for 100% KV cache hit
       const wireTools = (options.tools || []).map(t => {
         let params = t.parameters || { type: 'object', properties: {} }
-        if ((t.name === 'bash' || t.name === 'pwsh') && params.properties) {
-          const filteredProps = { ...params.properties }
-          delete filteredProps.sandbox_permissions
-          delete filteredProps.justification
-          params = { ...params, properties: filteredProps }
+        if (params.properties) {
+          if (params.properties.sandbox_permissions || params.properties.justification) {
+            const filteredProps = { ...params.properties }
+            delete filteredProps.sandbox_permissions
+            delete filteredProps.justification
+            params = { ...params, properties: filteredProps }
+          }
         }
         return {
           type: 'function',
@@ -241,6 +272,7 @@ export class CodexAdapter extends LlmAdapter {
         model,
         messages: wireMessages,
         stream: true,
+        stream_options: { include_usage: true },
         ...(wireTools.length > 0 ? { tools: wireTools } : {}),
         ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
         ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
@@ -302,14 +334,15 @@ export class CodexAdapter extends LlmAdapter {
         }
       }
 
-      // Static tool schema optimization: stable prefix for 100% KV cache hit
       const wireTools = (options.tools || []).map(t => {
         let params = t.parameters || { type: 'object', properties: {} }
-        if ((t.name === 'bash' || t.name === 'pwsh') && params.properties) {
-          const filteredProps = { ...params.properties }
-          delete filteredProps.sandbox_permissions
-          delete filteredProps.justification
-          params = { ...params, properties: filteredProps }
+        if (params.properties) {
+          if (params.properties.sandbox_permissions || params.properties.justification) {
+            const filteredProps = { ...params.properties }
+            delete filteredProps.sandbox_permissions
+            delete filteredProps.justification
+            params = { ...params, properties: filteredProps }
+          }
         }
         return {
           type: 'function',
@@ -351,6 +384,7 @@ export class CodexAdapter extends LlmAdapter {
     const decoder = new TextDecoder()
     let buffer = ''
     let hasToolCalls = false
+    let pendingUsage: TokenUsage | undefined
 
     let nextBlockIndex = 0
     let textBlockIndex: number | null = null
@@ -369,15 +403,13 @@ export class CodexAdapter extends LlmAdapter {
           const argsObj = JSON.parse(toolInfo.accumulatedArgs)
           let modified = false
 
-          if (toolInfo.name === 'bash' || toolInfo.name === 'pwsh') {
-            if (argsObj.sandbox_permissions !== undefined) {
-              delete argsObj.sandbox_permissions
-              modified = true
-            }
-            if (argsObj.justification !== undefined) {
-              delete argsObj.justification
-              modified = true
-            }
+          if (argsObj.sandbox_permissions !== undefined) {
+            delete argsObj.sandbox_permissions
+            modified = true
+          }
+          if (argsObj.justification !== undefined) {
+            delete argsObj.justification
+            modified = true
           }
 
           if (modified) {
@@ -415,6 +447,7 @@ export class CodexAdapter extends LlmAdapter {
           if (!trimmed || trimmed.startsWith(':')) continue
           if (trimmed === 'data: [DONE]') {
             yield* emitToolCallBlockEnds()
+            if (pendingUsage) yield { type: 'usage', usage: pendingUsage }
             yield { type: 'finish', reason: { kind: hasToolCalls ? 'tool-calls' : 'stop' } }
             return
           }
@@ -482,12 +515,22 @@ export class CodexAdapter extends LlmAdapter {
                   argumentsDelta: parsed.delta,
                 }
               } else if (parsed.type === 'response.completed' || parsed.type === 'response.done') {
+                const rawUsage = parsed.response?.usage || parsed.usage
+                if (rawUsage) {
+                  pendingUsage = mapWireUsage(rawUsage)
+                }
                 yield* emitToolCallBlockEnds()
+                if (pendingUsage) yield { type: 'usage', usage: pendingUsage }
                 yield { type: 'finish', reason: { kind: hasToolCalls ? 'tool-calls' : 'stop' } }
                 return
               }
 
               // 2. Classic OpenAI ChatCompletions format fallback
+              const rawUsage = parsed.usage
+              if (rawUsage) {
+                pendingUsage = mapWireUsage(rawUsage)
+              }
+
               const choice = parsed.choices?.[0]
               if (choice) {
                 const delta = choice.delta
@@ -535,6 +578,7 @@ export class CodexAdapter extends LlmAdapter {
                 }
                 if (choice.finish_reason) {
                   yield* emitToolCallBlockEnds()
+                  if (pendingUsage) yield { type: 'usage', usage: pendingUsage }
                   yield {
                     type: 'finish',
                     reason: {
@@ -551,6 +595,7 @@ export class CodexAdapter extends LlmAdapter {
         }
       }
       yield* emitToolCallBlockEnds()
+      if (pendingUsage) yield { type: 'usage', usage: pendingUsage }
       yield { type: 'finish', reason: { kind: hasToolCalls ? 'tool-calls' : 'stop' } }
     } finally {
       reader.releaseLock()
