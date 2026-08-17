@@ -2,12 +2,13 @@
  * OpenAI Codex OAuth Adapter
  * Connects to OpenAI models using Codex OAuth token via ChatGPT backend API.
  * 100% dynamically synchronizes model list from active OAuth remote session.
+ * Fully supports system prompts, reasoning streams, tool definitions, and multi-turn tool calling.
  */
 
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
-import { LlmAdapter } from '@deepseek-ai/dsh-llm'
+import { CallId, LlmAdapter } from '@deepseek-ai/dsh-llm'
 import type {
   GenerateOptions,
   LlmModelInfo,
@@ -154,41 +155,148 @@ export class CodexAdapter extends LlmAdapter {
       headers['ChatGPT-Account-Id'] = token.accountId
     }
 
+    // Bi-directional tool name mapping for OpenAI pattern `^[a-zA-Z0-9_-]+$`
+    const toolNameMap = new Map<string, string>() // wireName -> origName
+    const origToWireName = new Map<string, string>() // origName -> wireName
+
+    for (const tool of options.tools || []) {
+      const wireName = tool.name.replace(/[^a-zA-Z0-9_-]/g, '__')
+      toolNameMap.set(wireName, tool.name)
+      origToWireName.set(tool.name, wireName)
+    }
+
     let body: Record<string, any>
 
     if (isCustomUrl) {
-      const messages = (options.messages || []).map((m: any) => {
-        if (typeof m.content === 'string') return { role: m.role, content: m.content }
-        if (Array.isArray(m.content)) {
-          const text = m.content.filter((p: any) => p.type === 'text').map((p: any) => p.text).join('\n')
-          return { role: m.role, content: text }
+      // Standard OpenAI Chat Completions wire format
+      const wireMessages: any[] = []
+      if (options.system) {
+        wireMessages.push({ role: 'system', content: options.system })
+      }
+
+      for (const m of options.messages || []) {
+        const contentBlocks = Array.isArray(m.content) ? m.content : [{ type: 'text', text: String(m.content || '') }]
+        if (m.role === 'assistant') {
+          const text = contentBlocks.filter(b => b.type === 'text').map(b => b.text).join('\n')
+          const toolCalls = contentBlocks.filter(b => b.type === 'tool-call').map(tc => ({
+            id: tc.id,
+            type: 'function',
+            function: {
+              name: origToWireName.get(tc.name) || tc.name.replace(/[^a-zA-Z0-9_-]/g, '__'),
+              arguments: tc.arguments,
+            },
+          }))
+          wireMessages.push({
+            role: 'assistant',
+            content: text || '',
+            ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+          })
+        } else {
+          const text = contentBlocks.filter(b => b.type === 'text').map(b => b.text).join('\n')
+          if (text) {
+            wireMessages.push({ role: 'user', content: text })
+          }
+          const toolResults = contentBlocks.filter(b => b.type === 'tool-result')
+          for (const tr of toolResults) {
+            const resultText = Array.isArray(tr.content)
+              ? tr.content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n')
+              : String(tr.content || '')
+            wireMessages.push({
+              role: 'tool',
+              tool_call_id: tr.toolCallId,
+              content: resultText || '(no output)',
+            })
+          }
         }
-        return { role: m.role, content: String(m.content || '') }
-      })
-      body = { model, messages, stream: true }
-      if (options.temperature !== undefined) body.temperature = options.temperature
-      if (options.maxTokens) body.max_tokens = options.maxTokens
+      }
+
+      const wireTools = (options.tools || []).map(t => ({
+        type: 'function',
+        function: {
+          name: origToWireName.get(t.name) || t.name.replace(/[^a-zA-Z0-9_-]/g, '__'),
+          description: t.description,
+          parameters: t.parameters || { type: 'object', properties: {} },
+        },
+      }))
+
+      body = {
+        model,
+        messages: wireMessages,
+        stream: true,
+        ...(wireTools.length > 0 ? { tools: wireTools } : {}),
+        ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
+        ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
+      }
     } else {
       // ChatGPT Backend Codex Responses API format
-      const input = (options.messages || []).map((m: any) => {
-        const isAssistant = m.role === 'assistant'
-        const text = typeof m.content === 'string'
-          ? m.content
-          : Array.isArray(m.content)
-            ? m.content.filter((p: any) => p.type === 'text').map((p: any) => p.text).join('\n')
-            : String(m.content || '')
-        return {
+      const input: any[] = []
+      if (options.system) {
+        input.push({
           type: 'message',
-          role: isAssistant ? 'assistant' : 'user',
-          content: [{ type: isAssistant ? 'output_text' : 'input_text', text }],
+          role: 'user',
+          content: [{ type: 'input_text', text: `[System Instructions]\n${options.system}` }],
+        })
+      }
+
+      for (const m of options.messages || []) {
+        const isAssistant = m.role === 'assistant'
+        const contentBlocks = Array.isArray(m.content) ? m.content : [{ type: 'text', text: String(m.content || '') }]
+
+        if (isAssistant) {
+          const textParts = contentBlocks.filter(b => b.type === 'text').map(b => b.text).join('\n')
+          if (textParts) {
+            input.push({
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: textParts }],
+            })
+          }
+          const toolCalls = contentBlocks.filter(b => b.type === 'tool-call')
+          for (const tc of toolCalls) {
+            const wireName = origToWireName.get(tc.name) || tc.name.replace(/[^a-zA-Z0-9_-]/g, '__')
+            input.push({
+              type: 'function_call',
+              call_id: tc.id,
+              name: wireName,
+              arguments: tc.arguments,
+            })
+          }
+        } else {
+          const textParts = contentBlocks.filter(b => b.type === 'text').map(b => b.text).join('\n')
+          if (textParts) {
+            input.push({
+              type: 'message',
+              role: 'user',
+              content: [{ type: 'input_text', text: textParts }],
+            })
+          }
+          const toolResults = contentBlocks.filter(b => b.type === 'tool-result')
+          for (const tr of toolResults) {
+            const resultText = Array.isArray(tr.content)
+              ? tr.content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n')
+              : String(tr.content || '')
+            input.push({
+              type: 'function_call_output',
+              call_id: tr.toolCallId,
+              output: resultText || '(no output)',
+            })
+          }
         }
-      })
+      }
+
+      const wireTools = (options.tools || []).map(t => ({
+        type: 'function',
+        name: origToWireName.get(t.name) || t.name.replace(/[^a-zA-Z0-9_-]/g, '__'),
+        description: t.description,
+        parameters: t.parameters || { type: 'object', properties: {} },
+      }))
 
       body = {
         model,
         input,
         stream: true,
         store: false,
+        ...(wireTools.length > 0 ? { tools: wireTools } : {}),
       }
       if (options.reasoningEffort && options.reasoningEffort !== 'off' && supportsReasoning) {
         body.reasoning = { effort: options.reasoningEffort }
@@ -215,6 +323,11 @@ export class CodexAdapter extends LlmAdapter {
     const decoder = new TextDecoder()
     let buffer = ''
     let hasReasoning = false
+    let hasToolCalls = false
+
+    // Track active tool calls for Responses API
+    const activeToolCalls = new Map<string, { name: string; index: number }>()
+    let nextToolIndex = 1
 
     try {
       while (true) {
@@ -229,7 +342,7 @@ export class CodexAdapter extends LlmAdapter {
           const trimmed = line.trim()
           if (!trimmed || trimmed.startsWith(':')) continue
           if (trimmed === 'data: [DONE]') {
-            yield { type: 'finish', reason: { kind: 'stop' } }
+            yield { type: 'finish', reason: { kind: hasToolCalls ? 'tool-calls' : 'stop' } }
             return
           }
 
@@ -249,17 +362,63 @@ export class CodexAdapter extends LlmAdapter {
                   hasReasoning = true
                   yield { type: 'reasoning-delta', index: 0, text: parsed.delta }
                 }
+              } else if (parsed.type === 'response.output_item.added' && parsed.item?.type === 'function_call') {
+                hasToolCalls = true
+                const callId = parsed.item.call_id || `call_${parsed.item.id || nextToolIndex}`
+                const wireName = parsed.item.name || ''
+                const origName = toolNameMap.get(wireName) || wireName.replace(/__/g, '.')
+                activeToolCalls.set(callId, { name: origName, index: nextToolIndex++ })
+              } else if (parsed.type === 'response.function_call_arguments.delta') {
+                hasToolCalls = true
+                const callId = parsed.call_id || Array.from(activeToolCalls.keys())[0] || 'call_0'
+                const toolInfo = activeToolCalls.get(callId)
+                const origName = toolInfo?.name || 'tool'
+                const toolIdx = toolInfo?.index ?? nextToolIndex++
+                yield {
+                  type: 'tool-call-delta',
+                  index: toolIdx + (hasReasoning ? 1 : 0),
+                  id: CallId(callId),
+                  name: origName,
+                  argumentsDelta: parsed.delta,
+                }
+              } else if (parsed.type === 'response.completed' || parsed.type === 'response.done') {
+                yield { type: 'finish', reason: { kind: hasToolCalls ? 'tool-calls' : 'stop' } }
+                return
               }
 
               // 2. Classic OpenAI ChatCompletions format fallback
               const choice = parsed.choices?.[0]
-              if (choice?.delta?.reasoning_content) {
-                hasReasoning = true
-                yield { type: 'reasoning-delta', index: 0, text: choice.delta.reasoning_content }
-              }
-              if (choice?.delta?.content) {
-                const textIndex = hasReasoning ? 1 : 0
-                yield { type: 'text-delta', index: textIndex, text: choice.delta.content }
+              if (choice) {
+                const delta = choice.delta
+                if (delta?.reasoning_content) {
+                  hasReasoning = true
+                  yield { type: 'reasoning-delta', index: 0, text: delta.reasoning_content }
+                }
+                if (delta?.content) {
+                  const textIndex = hasReasoning ? 1 : 0
+                  yield { type: 'text-delta', index: textIndex, text: delta.content }
+                }
+                if (delta?.tool_calls) {
+                  hasToolCalls = true
+                  for (const tc of delta.tool_calls) {
+                    const wireName = tc.function?.name
+                    const origName = wireName ? (toolNameMap.get(wireName) || wireName.replace(/__/g, '.')) : undefined
+                    yield {
+                      type: 'tool-call-delta',
+                      index: (tc.index ?? 0) + (hasReasoning ? 2 : 1),
+                      id: CallId(tc.id || `call_${tc.index || 0}`),
+                      ...(origName ? { name: origName } : {}),
+                      argumentsDelta: tc.function?.arguments || '',
+                    }
+                  }
+                }
+                if (choice.finish_reason) {
+                  yield {
+                    type: 'finish',
+                    reason: { kind: (choice.finish_reason === 'tool_calls' || hasToolCalls) ? 'tool-calls' : 'stop' },
+                  }
+                  return
+                }
               }
             } catch {
               // Ignore partial JSON parse errors
@@ -267,7 +426,7 @@ export class CodexAdapter extends LlmAdapter {
           }
         }
       }
-      yield { type: 'finish', reason: { kind: 'stop' } }
+      yield { type: 'finish', reason: { kind: hasToolCalls ? 'tool-calls' : 'stop' } }
     } finally {
       reader.releaseLock()
     }
