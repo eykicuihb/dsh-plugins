@@ -21,6 +21,12 @@ export const PROVIDER_PRESETS: Readonly<Record<VisionProviderType, ProviderPrese
     defaultApiKeyEnv: 'ZHIPU_API_KEY',
     displayName: '智谱 AI (GLM-4V)',
   },
+  minimax: {
+    baseURL: 'https://api.minimaxi.chat/v1',
+    defaultModel: 'MiniMax-M3',
+    defaultApiKeyEnv: 'MINIMAX_API_KEY',
+    displayName: 'MiniMax (海螺 AI / MiniMax-M3)',
+  },
   openai: {
     baseURL: 'https://api.openai.com/v1',
     defaultModel: 'gpt-4o-mini',
@@ -57,7 +63,7 @@ export const PROVIDER_PRESETS: Readonly<Record<VisionProviderType, ProviderPrese
 export interface Config {
   /** The vision model provider to route requests to. */
   provider?: VisionProviderType
-  /** Exact model identifier (e.g. qwen2.5-vl-72b-instruct, gpt-4o). */
+  /** Exact model identifier (e.g. qwen2.5-vl-72b-instruct, gpt-4o, MiniMax-M3). */
   model?: string
   /** Custom endpoint URL base. */
   baseURL?: string
@@ -71,11 +77,10 @@ export interface Config {
 
 /** Schemastery validation schema and Web UI form descriptors. */
 export const Config: z<Config> = z.object({
-  provider: z.string().default('dashscope').description('视觉模型供应商（如 dashscope, zhipu, openai, anthropic, gemini, ollama, custom 或自定义）'),
-
+  provider: z.string().default('dashscope').description('视觉模型供应商（如 dashscope, zhipu, minimax, openai, anthropic, gemini, ollama, custom 或自定义）'),
   model: z.string().description('模型名称（留空则自动选用该供应商的推荐视觉模型）'),
   baseURL: z.string().description('API 端点 Base URL（留空则自动选用官方默认地址）'),
   apiKey: z.string().role('secret').description('直接填写 API Key（可选）'),
-  apiKeyEnv: z.string().role('credential-ref').description('从环境变量读取 API Key（如 DASHSCOPE_API_KEY / OPENAI_API_KEY）'),
+  apiKeyEnv: z.string().role('credential-ref').description('从环境变量读取 API Key（如 MINIMAX_API_KEY / DASHSCOPE_API_KEY / OPENAI_API_KEY）'),
   timeoutMs: z.number().min(1000).default(60000).description('单次视觉分析超时毫秒数'),
 })

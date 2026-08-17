@@ -44,6 +44,11 @@ export async function resolveVlmOptions(config: Config, ctx?: Context): Promise<
   if (preset.defaultApiKeyEnv && !credentialKeys.includes(preset.defaultApiKeyEnv)) {
     credentialKeys.push(preset.defaultApiKeyEnv)
   }
+  if (provider === 'minimax') {
+    for (const fallback of ['MINIMAX_API_KEY', 'MINIMAXI_API_KEY', 'CUSTOM_VISION_API_KEY']) {
+      if (!credentialKeys.includes(fallback)) credentialKeys.push(fallback)
+    }
+  }
   if (provider === 'custom' || provider === 'opencode' || provider === 'opencode-go') {
     for (const fallback of ['CUSTOM_VISION_API_KEY', 'OPENCODE_API_KEY', 'OPENAI_API_KEY']) {
       if (!credentialKeys.includes(fallback)) credentialKeys.push(fallback)
@@ -97,7 +102,7 @@ export async function executeVlmCall(
 
   if (provider !== 'ollama' && !apiKey) {
     throw new Error(
-      `[DeepIris] 视觉服务未配置 API Key。请在 WebUI 设置 -> 插件 -> DeepIris 中配置 API Key。`,
+      `[DeepIris] 视觉服务未配置 API Key。请在 WebUI 设置 -> 插件 -> DeepIris 中配置 API Key（或环境变量 MINIMAX_API_KEY / DASHSCOPE_API_KEY / CUSTOM_VISION_API_KEY）。`,
     )
   }
 
@@ -217,14 +222,12 @@ async function callAnthropicVlm(params: AnthropicCallParams): Promise<VlmCallRes
   const { baseURL, apiKey, model, dataUrl, promptText, signal } = params
   const endpoint = `${baseURL}/messages`
 
-  // Parse data URL: data:image/png;base64,...
-  const match = /^data:(image\/[a-zA-Z0-9+.-]+);base64,(.+)$/.exec(dataUrl)
-  if (!match || !match[1] || !match[2]) {
-    throw new Error('[DeepIris] 无法解析图片的 Base64 数据 URL 格式')
+  // Parse data URL components: data:<mediaType>;base64,<data>
+  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/)
+  if (!match) {
+    throw new Error('[DeepIris] 无法解析图片 Data URL 格式')
   }
-
-  const mediaType = match[1]
-  const base64Data = match[2]
+  const [, mediaType, base64Data] = match
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -234,7 +237,7 @@ async function callAnthropicVlm(params: AnthropicCallParams): Promise<VlmCallRes
 
   const body = {
     model,
-    max_tokens: 4096,
+    max_tokens: 2048,
     messages: [
       {
         role: 'user',
@@ -266,16 +269,17 @@ async function callAnthropicVlm(params: AnthropicCallParams): Promise<VlmCallRes
   if (!response.ok) {
     const errorText = await response.text().catch(() => '')
     throw new Error(
-      `[DeepIris] Anthropic 视觉调用失败 (${response.status} ${response.statusText}): ${errorText || '未知错误'}`,
+      `[DeepIris] Anthropic 视觉服务调用失败 (${response.status} ${response.statusText}): ${errorText || '未知服务端错误'}`,
     )
   }
 
   const result = await response.json()
-  const blocks = result.content ?? []
-  const observation = blocks
-    .filter((b: { type: string; text?: string }) => b.type === 'text' && typeof b.text === 'string')
-    .map((b: { text: string }) => b.text)
-    .join('\n') || '未能从 Anthropic 获得有效文本分析。'
+  const content = result.content
+  const observation = Array.isArray(content)
+    ? content.map(block => (block.type === 'text' ? block.text : '')).join('\n').trim()
+    : typeof content === 'string'
+      ? content
+      : '未能从 Anthropic 获得有效的视觉分析结果。'
 
   return {
     observation,

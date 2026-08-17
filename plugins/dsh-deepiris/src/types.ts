@@ -8,6 +8,7 @@
 export type VisionProviderType =
   | 'dashscope'
   | 'zhipu'
+  | 'minimax'
   | 'openai'
   | 'anthropic'
   | 'gemini'
