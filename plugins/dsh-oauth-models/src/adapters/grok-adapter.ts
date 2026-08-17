@@ -2,7 +2,7 @@
  * xAI Grok OAuth Adapter
  * Connects to xAI Grok models using Grok OAuth token via xAI API.
  * 100% dynamically synchronizes model list from official xAI API.
- * Fully supports system prompts, reasoning streams, tool definitions, and multi-turn tool calling.
+ * Fully supports system prompts, reasoning streams, tool definitions, and multi-turn parallel tool calling.
  */
 
 import { CallId, LlmAdapter } from '@deepseek-ai/dsh-llm'
@@ -23,6 +23,13 @@ interface DynamicGrokModelMeta {
   contextWindow: number
   defaultMaxTokens: number
   supportsReasoning?: boolean
+}
+
+interface ActiveToolCallState {
+  callId: string
+  name: string
+  blockIndex: number
+  accumulatedArgs: string
 }
 
 export class GrokAdapter extends LlmAdapter {
@@ -229,8 +236,58 @@ export class GrokAdapter extends LlmAdapter {
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
-    let hasReasoning = false
     let hasToolCalls = false
+
+    let nextBlockIndex = 0
+    let textBlockIndex: number | null = null
+    let reasoningBlockIndex: number | null = null
+
+    const toolCallByOutputIndex = new Map<number, ActiveToolCallState>()
+    const allActiveToolCalls = new Set<ActiveToolCallState>()
+
+    /** Helper to emit authoritative cleaned block-end for tool calls */
+    const emitToolCallBlockEnds = function* () {
+      for (const toolInfo of allActiveToolCalls) {
+        let finalArgs = toolInfo.accumulatedArgs
+        try {
+          const argsObj = JSON.parse(toolInfo.accumulatedArgs)
+          let modified = false
+
+          if (toolInfo.name === 'bash' || toolInfo.name === 'pwsh') {
+            if (
+              argsObj.justification !== undefined &&
+              (!argsObj.justification || typeof argsObj.justification !== 'string' || argsObj.justification.trim() === '')
+            ) {
+              delete argsObj.sandbox_permissions
+              delete argsObj.justification
+              modified = true
+            }
+            if (argsObj.sandbox_permissions && (!argsObj.justification || argsObj.justification.trim() === '')) {
+              delete argsObj.sandbox_permissions
+              modified = true
+            }
+          }
+
+          if (modified) {
+            finalArgs = JSON.stringify(argsObj)
+          }
+        } catch {
+          // Keep raw if not valid JSON
+        }
+
+        yield {
+          type: 'block-end' as const,
+          index: toolInfo.blockIndex,
+          block: {
+            type: 'tool-call' as const,
+            id: CallId(toolInfo.callId),
+            name: toolInfo.name,
+            arguments: finalArgs,
+          },
+        }
+      }
+      allActiveToolCalls.clear()
+    }
 
     try {
       while (true) {
@@ -245,6 +302,7 @@ export class GrokAdapter extends LlmAdapter {
           const trimmed = line.trim()
           if (!trimmed || trimmed.startsWith(':')) continue
           if (trimmed === 'data: [DONE]') {
+            yield* emitToolCallBlockEnds()
             yield { type: 'finish', reason: { kind: hasToolCalls ? 'tool-calls' : 'stop' } }
             return
           }
@@ -258,31 +316,54 @@ export class GrokAdapter extends LlmAdapter {
 
               const delta = choice.delta
               if (delta?.reasoning_content) {
-                hasReasoning = true
-                yield { type: 'reasoning-delta', index: 0, text: delta.reasoning_content }
+                if (reasoningBlockIndex === null) reasoningBlockIndex = nextBlockIndex++
+                yield { type: 'reasoning-delta', index: reasoningBlockIndex, text: delta.reasoning_content }
               }
               if (delta?.content) {
-                const textIndex = hasReasoning ? 1 : 0
-                yield { type: 'text-delta', index: textIndex, text: delta.content }
+                if (textBlockIndex === null) textBlockIndex = nextBlockIndex++
+                yield { type: 'text-delta', index: textBlockIndex, text: delta.content }
               }
               if (delta?.tool_calls) {
                 hasToolCalls = true
                 for (const tc of delta.tool_calls) {
-                  const wireName = tc.function?.name
-                  const origName = wireName ? (toolNameMap.get(wireName) || wireName.replace(/__/g, '.')) : undefined
+                  const tcIndex = tc.index ?? 0
+                  let toolInfo = toolCallByOutputIndex.get(tcIndex)
+                  if (!toolInfo) {
+                    const wireName = tc.function?.name
+                    const origName = wireName ? toolNameMap.get(wireName) || wireName.replace(/__/g, '.') : 'tool'
+                    toolInfo = {
+                      callId: tc.id || `call_${tcIndex}`,
+                      name: origName,
+                      blockIndex: nextBlockIndex++,
+                      accumulatedArgs: '',
+                    }
+                    toolCallByOutputIndex.set(tcIndex, toolInfo)
+                    allActiveToolCalls.add(toolInfo)
+                  } else if (tc.function?.name) {
+                    const wireName = tc.function.name
+                    toolInfo.name = toolNameMap.get(wireName) || wireName.replace(/__/g, '.')
+                  }
+                  if (tc.id) {
+                    toolInfo.callId = tc.id
+                  }
+                  const frag = tc.function?.arguments || ''
+                  toolInfo.accumulatedArgs += frag
                   yield {
                     type: 'tool-call-delta',
-                    index: (tc.index ?? 0) + (hasReasoning ? 2 : 1),
-                    id: CallId(tc.id || `call_${tc.index || 0}`),
-                    ...(origName ? { name: origName } : {}),
-                    argumentsDelta: tc.function?.arguments || '',
+                    index: toolInfo.blockIndex,
+                    id: CallId(toolInfo.callId),
+                    name: toolInfo.name,
+                    argumentsDelta: frag,
                   }
                 }
               }
               if (choice.finish_reason) {
+                yield* emitToolCallBlockEnds()
                 yield {
                   type: 'finish',
-                  reason: { kind: (choice.finish_reason === 'tool_calls' || hasToolCalls) ? 'tool-calls' : 'stop' },
+                  reason: {
+                    kind: choice.finish_reason === 'tool_calls' || hasToolCalls ? 'tool-calls' : 'stop',
+                  },
                 }
                 return
               }
@@ -292,6 +373,7 @@ export class GrokAdapter extends LlmAdapter {
           }
         }
       }
+      yield* emitToolCallBlockEnds()
       yield { type: 'finish', reason: { kind: hasToolCalls ? 'tool-calls' : 'stop' } }
     } finally {
       reader.releaseLock()
