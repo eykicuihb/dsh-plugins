@@ -32,6 +32,22 @@ interface ActiveToolCallState {
   accumulatedArgs: string
 }
 
+function hasRecentSandboxDenial(messages: readonly any[]): boolean {
+  if (!messages || messages.length === 0) return false
+  const recent = messages.slice(-3)
+  for (const m of recent) {
+    const text = typeof m.content === 'string'
+      ? m.content
+      : Array.isArray(m.content)
+        ? m.content.map((b: any) => (typeof b.text === 'string' ? b.text : '')).join('\n')
+        : ''
+    if (text.includes('[sandbox: file access denied') || text.includes('[sandbox: escalation available')) {
+      return true
+    }
+  }
+  return false
+}
+
 export class GrokAdapter extends LlmAdapter {
   private readonly tokenStore: TokenStore
   private readonly quotaService?: QuotaService
@@ -141,6 +157,9 @@ export class GrokAdapter extends LlmAdapter {
     const baseURL = (this.customBaseURL && this.customBaseURL.trim()) || 'https://api.x.ai/v1'
     const endpoint = `${baseURL.replace(/\/+$/, '')}/chat/completions`
 
+    // Determine whether escalation is currently valid based on recent sandbox denial in history
+    const allowEscalation = hasRecentSandboxDenial(options.messages || [])
+
     // Bi-directional tool name mapping
     const toolNameMap = new Map<string, string>() // wireName -> origName
     const origToWireName = new Map<string, string>() // origName -> wireName
@@ -192,14 +211,23 @@ export class GrokAdapter extends LlmAdapter {
       }
     }
 
-    const wireTools = (options.tools || []).map(t => ({
-      type: 'function',
-      function: {
-        name: origToWireName.get(t.name) || t.name.replace(/[^a-zA-Z0-9_-]/g, '__'),
-        description: t.description,
-        parameters: t.parameters || { type: 'object', properties: {} },
-      },
-    }))
+    const wireTools = (options.tools || []).map(t => {
+      let params = t.parameters || { type: 'object', properties: {} }
+      if (!allowEscalation && (t.name === 'bash' || t.name === 'pwsh') && params.properties) {
+        const filteredProps = { ...params.properties }
+        delete filteredProps.sandbox_permissions
+        delete filteredProps.justification
+        params = { ...params, properties: filteredProps }
+      }
+      return {
+        type: 'function',
+        function: {
+          name: origToWireName.get(t.name) || t.name.replace(/[^a-zA-Z0-9_-]/g, '__'),
+          description: t.description,
+          parameters: params,
+        },
+      }
+    })
 
     const body: Record<string, any> = {
       model,
@@ -254,17 +282,15 @@ export class GrokAdapter extends LlmAdapter {
           let modified = false
 
           if (toolInfo.name === 'bash' || toolInfo.name === 'pwsh') {
-            if (
-              argsObj.justification !== undefined &&
-              (!argsObj.justification || typeof argsObj.justification !== 'string' || argsObj.justification.trim() === '')
-            ) {
-              delete argsObj.sandbox_permissions
-              delete argsObj.justification
-              modified = true
-            }
-            if (argsObj.sandbox_permissions && (!argsObj.justification || argsObj.justification.trim() === '')) {
-              delete argsObj.sandbox_permissions
-              modified = true
+            if (!allowEscalation || !argsObj.justification || typeof argsObj.justification !== 'string' || argsObj.justification.trim() === '') {
+              if (argsObj.sandbox_permissions !== undefined) {
+                delete argsObj.sandbox_permissions
+                modified = true
+              }
+              if (argsObj.justification !== undefined) {
+                delete argsObj.justification
+                modified = true
+              }
             }
           }
 
