@@ -16,7 +16,7 @@ import {
 export const DEEPIRIS_NS = 'deepiris'
 
 /** Default credential reference when unset. */
-const DEFAULT_API_KEY_REF = 'DASHSCOPE_API_KEY'
+const DEFAULT_API_KEY_REF = 'CUSTOM_VISION_API_KEY'
 
 /** Form field the credential control stages under. */
 const API_KEY_FIELD = 'apiKey'
@@ -142,6 +142,8 @@ function refOf(snapshot: SettingsScopeSnapshot<DeepIrisSettings>): string {
   if (declared !== undefined && declared.length > 0) return declared
   const provider = snapshot.value?.provider ?? 'dashscope'
   switch (provider) {
+    case 'dashscope': return 'DASHSCOPE_API_KEY'
+    case 'minimax': return 'MINIMAX_API_KEY'
     case 'openai': return 'OPENAI_API_KEY'
     case 'anthropic': return 'ANTHROPIC_API_KEY'
     case 'zhipu': return 'ZHIPU_API_KEY'
@@ -150,7 +152,7 @@ function refOf(snapshot: SettingsScopeSnapshot<DeepIrisSettings>): string {
     case 'opencode':
     case 'opencode-go':
     case 'custom':
-      return 'CUSTOM_VISION_API_KEY'
-    default: return DEFAULT_API_KEY_REF
+    default:
+      return DEFAULT_API_KEY_REF
   }
 }
