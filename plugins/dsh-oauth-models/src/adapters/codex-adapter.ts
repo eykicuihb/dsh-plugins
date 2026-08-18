@@ -3,7 +3,7 @@
  * Connects to OpenAI models using Codex OAuth token via ChatGPT backend API.
  * 100% dynamically synchronizes model list from active OAuth remote session.
  * Fully supports system prompts, reasoning streams, tool definitions, multi-turn parallel tool calling,
- * exact token accounting / usage reporting, and exponential backoff retry for network resilience.
+ * exact token accounting / usage reporting, and end-to-end stream-level retry resilience against 30s TTFT disconnects.
  */
 
 import fs from 'node:fs'
@@ -409,7 +409,6 @@ export class CodexAdapter extends LlmAdapter {
     }
 
     const maxRetries = 3
-    let response: Response | undefined
     let lastError: any = undefined
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -417,8 +416,11 @@ export class CodexAdapter extends LlmAdapter {
         throw new Error('Request was aborted')
       }
 
+      let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+      let chunksYielded = 0
+
       try {
-        response = await fetch(endpoint, {
+        const response = await fetch(endpoint, {
           method: 'POST',
           headers: {
             ...headers,
@@ -428,259 +430,283 @@ export class CodexAdapter extends LlmAdapter {
           signal: options.signal,
         })
 
-        if (response.ok) {
-          break
+        if (!response.ok) {
+          const errText = await response.text()
+          if (attempt < maxRetries && isRetryableHttpStatus(response.status)) {
+            const delayMs = 1500 * Math.pow(2, attempt)
+            await sleep(delayMs, options.signal)
+            continue
+          }
+          throw new Error(`OpenAI Codex API error (${response.status}): ${errText}`)
         }
 
-        const errText = await response.text()
-        if (attempt < maxRetries && isRetryableHttpStatus(response.status)) {
-          const delayMs = 1500 * Math.pow(2, attempt)
-          await sleep(delayMs, options.signal)
-          continue
+        if (!response.body) {
+          throw new Error('No response body received from Codex API.')
         }
 
-        throw new Error(`OpenAI Codex API error (${response.status}): ${errText}`)
+        reader = response.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+        let hasToolCalls = false
+        let pendingUsage: TokenUsage | undefined
+
+        let nextBlockIndex = 0
+        let textBlockIndex: number | null = null
+        let reasoningBlockIndex: number | null = null
+
+        // Track active tool calls by item_id (fc_...) and output_index
+        const toolCallByItemId = new Map<string, ActiveToolCallState>()
+        const toolCallByOutputIndex = new Map<number, ActiveToolCallState>()
+        const allActiveToolCalls = new Set<ActiveToolCallState>()
+
+        /** Helper to emit authoritative cleaned block-end for tool calls */
+        const emitToolCallBlockEnds = function* () {
+          for (const toolInfo of allActiveToolCalls) {
+            let finalArgs = toolInfo.accumulatedArgs
+            try {
+              const argsObj = JSON.parse(toolInfo.accumulatedArgs)
+              let modified = false
+
+              if (argsObj.sandbox_permissions !== undefined) {
+                delete argsObj.sandbox_permissions
+                modified = true
+              }
+              if (argsObj.justification !== undefined) {
+                delete argsObj.justification
+                modified = true
+              }
+
+              if (modified) {
+                finalArgs = JSON.stringify(argsObj)
+              }
+            } catch {
+              // Keep raw if not valid JSON
+            }
+
+            chunksYielded++
+            yield {
+              type: 'block-end' as const,
+              index: toolInfo.blockIndex,
+              block: {
+                type: 'tool-call' as const,
+                id: CallId(toolInfo.callId),
+                name: toolInfo.name,
+                arguments: finalArgs,
+              },
+            }
+          }
+          allActiveToolCalls.clear()
+        }
+
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split('\n')
+          buffer = lines.pop() || ''
+
+          for (const line of lines) {
+            const trimmed = line.trim()
+            if (!trimmed || trimmed.startsWith(':')) continue
+            if (trimmed === 'data: [DONE]') {
+              yield* emitToolCallBlockEnds()
+              if (pendingUsage) {
+                chunksYielded++
+                yield { type: 'usage', usage: pendingUsage }
+              }
+              chunksYielded++
+              yield { type: 'finish', reason: { kind: hasToolCalls ? 'tool-calls' : 'stop' } }
+              return
+            }
+
+            if (trimmed.startsWith('data: ')) {
+              const dataStr = trimmed.slice(6)
+              try {
+                const parsed = JSON.parse(dataStr)
+
+                // 1. ChatGPT Backend Responses API format
+                if (parsed.type === 'response.output_text.delta' || parsed.type === 'response.text.delta') {
+                  if (parsed.delta) {
+                    if (textBlockIndex === null) textBlockIndex = nextBlockIndex++
+                    chunksYielded++
+                    yield { type: 'text-delta', index: textBlockIndex, text: parsed.delta }
+                  }
+                } else if (parsed.type === 'response.reasoning.delta' || parsed.type === 'response.thought.delta') {
+                  if (parsed.delta) {
+                    if (reasoningBlockIndex === null) reasoningBlockIndex = nextBlockIndex++
+                    chunksYielded++
+                    yield { type: 'reasoning-delta', index: reasoningBlockIndex, text: parsed.delta }
+                  }
+                } else if (parsed.type === 'response.output_item.added' && parsed.item?.type === 'function_call') {
+                  hasToolCalls = true
+                  const itemId = parsed.item.id
+                  const callId = parsed.item.call_id || `call_${itemId || nextBlockIndex}`
+                  const wireName = parsed.item.name || ''
+                  const origName = toolNameMap.get(wireName) || wireName.replace(/__/g, '.')
+                  const blockIndex = nextBlockIndex++
+
+                  const toolInfo: ActiveToolCallState = {
+                    callId,
+                    name: origName,
+                    blockIndex,
+                    accumulatedArgs: '',
+                  }
+                  if (itemId) toolCallByItemId.set(itemId, toolInfo)
+                  if (parsed.output_index !== undefined) toolCallByOutputIndex.set(parsed.output_index, toolInfo)
+                  allActiveToolCalls.add(toolInfo)
+                } else if (parsed.type === 'response.function_call_arguments.delta') {
+                  hasToolCalls = true
+                  let toolInfo =
+                    (parsed.item_id && toolCallByItemId.get(parsed.item_id)) ||
+                    (parsed.output_index !== undefined && toolCallByOutputIndex.get(parsed.output_index))
+
+                  if (!toolInfo) {
+                    const blockIndex = nextBlockIndex++
+                    const callId = parsed.call_id || parsed.item_id || `call_${blockIndex}`
+                    toolInfo = {
+                      callId,
+                      name: 'tool',
+                      blockIndex,
+                      accumulatedArgs: '',
+                    }
+                    if (parsed.item_id) toolCallByItemId.set(parsed.item_id, toolInfo)
+                    if (parsed.output_index !== undefined) toolCallByOutputIndex.set(parsed.output_index, toolInfo)
+                    allActiveToolCalls.add(toolInfo)
+                  }
+
+                  toolInfo.accumulatedArgs += parsed.delta || ''
+
+                  chunksYielded++
+                  yield {
+                    type: 'tool-call-delta',
+                    index: toolInfo.blockIndex,
+                    id: CallId(toolInfo.callId),
+                    name: toolInfo.name,
+                    argumentsDelta: parsed.delta,
+                  }
+                } else if (parsed.type === 'response.completed' || parsed.type === 'response.done') {
+                  const rawUsage = parsed.response?.usage || parsed.usage
+                  if (rawUsage) {
+                    pendingUsage = mapWireUsage(rawUsage)
+                  }
+                  yield* emitToolCallBlockEnds()
+                  if (pendingUsage) {
+                    chunksYielded++
+                    yield { type: 'usage', usage: pendingUsage }
+                  }
+                  chunksYielded++
+                  yield { type: 'finish', reason: { kind: hasToolCalls ? 'tool-calls' : 'stop' } }
+                  return
+                }
+
+                // 2. Classic OpenAI ChatCompletions format fallback
+                const rawUsage = parsed.usage
+                if (rawUsage) {
+                  pendingUsage = mapWireUsage(rawUsage)
+                }
+
+                const choice = parsed.choices?.[0]
+                if (choice) {
+                  const delta = choice.delta
+                  if (delta?.reasoning_content) {
+                    if (reasoningBlockIndex === null) reasoningBlockIndex = nextBlockIndex++
+                    chunksYielded++
+                    yield { type: 'reasoning-delta', index: reasoningBlockIndex, text: delta.reasoning_content }
+                  }
+                  if (delta?.content) {
+                    if (textBlockIndex === null) textBlockIndex = nextBlockIndex++
+                    chunksYielded++
+                    yield { type: 'text-delta', index: textBlockIndex, text: delta.content }
+                  }
+                  if (delta?.tool_calls) {
+                    hasToolCalls = true
+                    for (const tc of delta.tool_calls) {
+                      const tcIndex = tc.index ?? 0
+                      let toolInfo = toolCallByOutputIndex.get(tcIndex)
+                      if (!toolInfo) {
+                        const wireName = tc.function?.name
+                        const origName = wireName ? toolNameMap.get(wireName) || wireName.replace(/__/g, '.') : 'tool'
+                        toolInfo = {
+                          callId: tc.id || `call_${tcIndex}`,
+                          name: origName,
+                          blockIndex: nextBlockIndex++,
+                          accumulatedArgs: '',
+                        }
+                        toolCallByOutputIndex.set(tcIndex, toolInfo)
+                        allActiveToolCalls.add(toolInfo)
+                      } else if (tc.function?.name) {
+                        const wireName = tc.function.name
+                        toolInfo.name = toolNameMap.get(wireName) || wireName.replace(/__/g, '.')
+                      }
+                      if (tc.id) {
+                        toolInfo.callId = tc.id
+                      }
+                      const frag = tc.function?.arguments || ''
+                      toolInfo.accumulatedArgs += frag
+                      chunksYielded++
+                      yield {
+                        type: 'tool-call-delta',
+                        index: toolInfo.blockIndex,
+                        id: CallId(toolInfo.callId),
+                        name: toolInfo.name,
+                        argumentsDelta: frag,
+                      }
+                    }
+                  }
+                  if (choice.finish_reason) {
+                    yield* emitToolCallBlockEnds()
+                    if (pendingUsage) {
+                      chunksYielded++
+                      yield { type: 'usage', usage: pendingUsage }
+                    }
+                    chunksYielded++
+                    yield {
+                      type: 'finish',
+                      reason: {
+                        kind: choice.finish_reason === 'tool_calls' || hasToolCalls ? 'tool-calls' : 'stop',
+                      },
+                    }
+                    return
+                  }
+                }
+              } catch {
+                // Ignore partial JSON parse errors
+              }
+            }
+          }
+        }
+        yield* emitToolCallBlockEnds()
+        if (pendingUsage) {
+          chunksYielded++
+          yield { type: 'usage', usage: pendingUsage }
+        }
+        chunksYielded++
+        yield { type: 'finish', reason: { kind: hasToolCalls ? 'tool-calls' : 'stop' } }
+        return
       } catch (err: any) {
         if (options.signal?.aborted || err.name === 'AbortError') {
           throw err
         }
         lastError = err
-        if (attempt < maxRetries && isRetryableNetworkError(err)) {
+
+        // If no chunks were yielded to the caller yet, we can safely retry!
+        if (chunksYielded === 0 && attempt < maxRetries && isRetryableNetworkError(err)) {
           const delayMs = 1500 * Math.pow(2, attempt)
           await sleep(delayMs, options.signal)
           continue
         }
+
         throw lastError
-      }
-    }
-
-    if (!response || !response.ok) {
-      throw lastError || new Error('Failed to connect to OpenAI Codex API after retries')
-    }
-
-    if (!response.body) {
-      throw new Error('No response body received from Codex API.')
-    }
-
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-    let hasToolCalls = false
-    let pendingUsage: TokenUsage | undefined
-
-    let nextBlockIndex = 0
-    let textBlockIndex: number | null = null
-    let reasoningBlockIndex: number | null = null
-
-    // Track active tool calls by item_id (fc_...) and output_index
-    const toolCallByItemId = new Map<string, ActiveToolCallState>()
-    const toolCallByOutputIndex = new Map<number, ActiveToolCallState>()
-    const allActiveToolCalls = new Set<ActiveToolCallState>()
-
-    /** Helper to emit authoritative cleaned block-end for tool calls */
-    const emitToolCallBlockEnds = function* () {
-      for (const toolInfo of allActiveToolCalls) {
-        let finalArgs = toolInfo.accumulatedArgs
-        try {
-          const argsObj = JSON.parse(toolInfo.accumulatedArgs)
-          let modified = false
-
-          if (argsObj.sandbox_permissions !== undefined) {
-            delete argsObj.sandbox_permissions
-            modified = true
-          }
-          if (argsObj.justification !== undefined) {
-            delete argsObj.justification
-            modified = true
-          }
-
-          if (modified) {
-            finalArgs = JSON.stringify(argsObj)
-          }
-        } catch {
-          // Keep raw if not valid JSON
-        }
-
-        yield {
-          type: 'block-end' as const,
-          index: toolInfo.blockIndex,
-          block: {
-            type: 'tool-call' as const,
-            id: CallId(toolInfo.callId),
-            name: toolInfo.name,
-            arguments: finalArgs,
-          },
+      } finally {
+        if (reader) {
+          try {
+            reader.releaseLock()
+          } catch {}
         }
       }
-      allActiveToolCalls.clear()
     }
 
-    try {
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n')
-        buffer = lines.pop() || ''
-
-        for (const line of lines) {
-          const trimmed = line.trim()
-          if (!trimmed || trimmed.startsWith(':')) continue
-          if (trimmed === 'data: [DONE]') {
-            yield* emitToolCallBlockEnds()
-            if (pendingUsage) yield { type: 'usage', usage: pendingUsage }
-            yield { type: 'finish', reason: { kind: hasToolCalls ? 'tool-calls' : 'stop' } }
-            return
-          }
-
-          if (trimmed.startsWith('data: ')) {
-            const dataStr = trimmed.slice(6)
-            try {
-              const parsed = JSON.parse(dataStr)
-
-              // 1. ChatGPT Backend Responses API format
-              if (parsed.type === 'response.output_text.delta' || parsed.type === 'response.text.delta') {
-                if (parsed.delta) {
-                  if (textBlockIndex === null) textBlockIndex = nextBlockIndex++
-                  yield { type: 'text-delta', index: textBlockIndex, text: parsed.delta }
-                }
-              } else if (parsed.type === 'response.reasoning.delta' || parsed.type === 'response.thought.delta') {
-                if (parsed.delta) {
-                  if (reasoningBlockIndex === null) reasoningBlockIndex = nextBlockIndex++
-                  yield { type: 'reasoning-delta', index: reasoningBlockIndex, text: parsed.delta }
-                }
-              } else if (parsed.type === 'response.output_item.added' && parsed.item?.type === 'function_call') {
-                hasToolCalls = true
-                const itemId = parsed.item.id
-                const callId = parsed.item.call_id || `call_${itemId || nextBlockIndex}`
-                const wireName = parsed.item.name || ''
-                const origName = toolNameMap.get(wireName) || wireName.replace(/__/g, '.')
-                const blockIndex = nextBlockIndex++
-
-                const toolInfo: ActiveToolCallState = {
-                  callId,
-                  name: origName,
-                  blockIndex,
-                  accumulatedArgs: '',
-                }
-                if (itemId) toolCallByItemId.set(itemId, toolInfo)
-                if (parsed.output_index !== undefined) toolCallByOutputIndex.set(parsed.output_index, toolInfo)
-                allActiveToolCalls.add(toolInfo)
-              } else if (parsed.type === 'response.function_call_arguments.delta') {
-                hasToolCalls = true
-                let toolInfo =
-                  (parsed.item_id && toolCallByItemId.get(parsed.item_id)) ||
-                  (parsed.output_index !== undefined && toolCallByOutputIndex.get(parsed.output_index))
-
-                if (!toolInfo) {
-                  const blockIndex = nextBlockIndex++
-                  const callId = parsed.call_id || parsed.item_id || `call_${blockIndex}`
-                  toolInfo = {
-                    callId,
-                    name: 'tool',
-                    blockIndex,
-                    accumulatedArgs: '',
-                  }
-                  if (parsed.item_id) toolCallByItemId.set(parsed.item_id, toolInfo)
-                  if (parsed.output_index !== undefined) toolCallByOutputIndex.set(parsed.output_index, toolInfo)
-                  allActiveToolCalls.add(toolInfo)
-                }
-
-                toolInfo.accumulatedArgs += parsed.delta || ''
-
-                yield {
-                  type: 'tool-call-delta',
-                  index: toolInfo.blockIndex,
-                  id: CallId(toolInfo.callId),
-                  name: toolInfo.name,
-                  argumentsDelta: parsed.delta,
-                }
-              } else if (parsed.type === 'response.completed' || parsed.type === 'response.done') {
-                const rawUsage = parsed.response?.usage || parsed.usage
-                if (rawUsage) {
-                  pendingUsage = mapWireUsage(rawUsage)
-                }
-                yield* emitToolCallBlockEnds()
-                if (pendingUsage) yield { type: 'usage', usage: pendingUsage }
-                yield { type: 'finish', reason: { kind: hasToolCalls ? 'tool-calls' : 'stop' } }
-                return
-              }
-
-              // 2. Classic OpenAI ChatCompletions format fallback
-              const rawUsage = parsed.usage
-              if (rawUsage) {
-                pendingUsage = mapWireUsage(rawUsage)
-              }
-
-              const choice = parsed.choices?.[0]
-              if (choice) {
-                const delta = choice.delta
-                if (delta?.reasoning_content) {
-                  if (reasoningBlockIndex === null) reasoningBlockIndex = nextBlockIndex++
-                  yield { type: 'reasoning-delta', index: reasoningBlockIndex, text: delta.reasoning_content }
-                }
-                if (delta?.content) {
-                  if (textBlockIndex === null) textBlockIndex = nextBlockIndex++
-                  yield { type: 'text-delta', index: textBlockIndex, text: delta.content }
-                }
-                if (delta?.tool_calls) {
-                  hasToolCalls = true
-                  for (const tc of delta.tool_calls) {
-                    const tcIndex = tc.index ?? 0
-                    let toolInfo = toolCallByOutputIndex.get(tcIndex)
-                    if (!toolInfo) {
-                      const wireName = tc.function?.name
-                      const origName = wireName ? toolNameMap.get(wireName) || wireName.replace(/__/g, '.') : 'tool'
-                      toolInfo = {
-                        callId: tc.id || `call_${tcIndex}`,
-                        name: origName,
-                        blockIndex: nextBlockIndex++,
-                        accumulatedArgs: '',
-                      }
-                      toolCallByOutputIndex.set(tcIndex, toolInfo)
-                      allActiveToolCalls.add(toolInfo)
-                    } else if (tc.function?.name) {
-                      const wireName = tc.function.name
-                      toolInfo.name = toolNameMap.get(wireName) || wireName.replace(/__/g, '.')
-                    }
-                    if (tc.id) {
-                      toolInfo.callId = tc.id
-                    }
-                    const frag = tc.function?.arguments || ''
-                    toolInfo.accumulatedArgs += frag
-                    yield {
-                      type: 'tool-call-delta',
-                      index: toolInfo.blockIndex,
-                      id: CallId(toolInfo.callId),
-                      name: toolInfo.name,
-                      argumentsDelta: frag,
-                    }
-                  }
-                }
-                if (choice.finish_reason) {
-                  yield* emitToolCallBlockEnds()
-                  if (pendingUsage) yield { type: 'usage', usage: pendingUsage }
-                  yield {
-                    type: 'finish',
-                    reason: {
-                      kind: choice.finish_reason === 'tool_calls' || hasToolCalls ? 'tool-calls' : 'stop',
-                    },
-                  }
-                  return
-                }
-              }
-            } catch {
-              // Ignore partial JSON parse errors
-            }
-          }
-        }
-      }
-      yield* emitToolCallBlockEnds()
-      if (pendingUsage) yield { type: 'usage', usage: pendingUsage }
-      yield { type: 'finish', reason: { kind: hasToolCalls ? 'tool-calls' : 'stop' } }
-    } finally {
-      reader.releaseLock()
-    }
+    throw lastError || new Error('Failed to stream from OpenAI Codex API after retries')
   }
 }
