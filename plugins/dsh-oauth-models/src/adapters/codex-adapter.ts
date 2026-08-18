@@ -3,7 +3,7 @@
  * Connects to OpenAI models using Codex OAuth token via ChatGPT backend API.
  * 100% dynamically synchronizes model list from active OAuth remote session.
  * Fully supports system prompts, reasoning streams, tool definitions, multi-turn parallel tool calling,
- * exact token accounting / usage reporting, and end-to-end stream-level retry resilience against 30s TTFT disconnects.
+ * exact token accounting / usage reporting, and end-to-end idempotent pre-stream retry resilience against 30s TTFT disconnects.
  */
 
 import fs from 'node:fs'
@@ -53,38 +53,8 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   })
 }
 
-function isRetryableNetworkError(err: any): boolean {
-  if (!err) return false
-  const msg = String(err.message || err).toLowerCase()
-  const code = String(err.code || err.cause?.code || '').toLowerCase()
-  return (
-    msg.includes('fetch failed') ||
-    msg.includes('socket') ||
-    msg.includes('econnreset') ||
-    msg.includes('etimedout') ||
-    msg.includes('econnrefused') ||
-    msg.includes('epipe') ||
-    msg.includes('network') ||
-    msg.includes('other side closed') ||
-    msg.includes('terminated') ||
-    code.includes('err_socket') ||
-    code.includes('und_err') ||
-    code === 'econnreset' ||
-    code === 'etimedout' ||
-    code === 'eai_again'
-  )
-}
-
-function isRetryableHttpStatus(status: number): boolean {
-  return (
-    status === 429 ||
-    status === 500 ||
-    status === 502 ||
-    status === 503 ||
-    status === 504 ||
-    status === 520 ||
-    status === 524
-  )
+function isNonRetryableHttpStatus(status: number): boolean {
+  return status === 400 || status === 401 || status === 403 || status === 404 || status === 422
 }
 
 function mapWireUsage(usage: any): TokenUsage {
@@ -432,7 +402,7 @@ export class CodexAdapter extends LlmAdapter {
 
         if (!response.ok) {
           const errText = await response.text()
-          if (attempt < maxRetries && isRetryableHttpStatus(response.status)) {
+          if (attempt < maxRetries && !isNonRetryableHttpStatus(response.status)) {
             const delayMs = 1500 * Math.pow(2, attempt)
             await sleep(delayMs, options.signal)
             continue
@@ -685,13 +655,13 @@ export class CodexAdapter extends LlmAdapter {
         yield { type: 'finish', reason: { kind: hasToolCalls ? 'tool-calls' : 'stop' } }
         return
       } catch (err: any) {
-        if (options.signal?.aborted || err.name === 'AbortError') {
+        if (options.signal?.aborted || err.name === 'AbortError' || err.message?.includes('aborted')) {
           throw err
         }
         lastError = err
 
         // If no chunks were yielded to the caller yet, we can safely retry!
-        if (chunksYielded === 0 && attempt < maxRetries && isRetryableNetworkError(err)) {
+        if (chunksYielded === 0 && attempt < maxRetries) {
           const delayMs = 1500 * Math.pow(2, attempt)
           await sleep(delayMs, options.signal)
           continue
