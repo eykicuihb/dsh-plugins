@@ -3,7 +3,7 @@
  * Connects to xAI Grok models using Grok OAuth token via xAI API.
  * 100% dynamically synchronizes model list from official xAI API.
  * Fully supports system prompts, reasoning streams, tool definitions, multi-turn parallel tool calling,
- * and exact token accounting / usage reporting for accurate real-time session statistics.
+ * exact token accounting / usage reporting, and exponential backoff retry for network resilience.
  */
 
 import { CallId, LlmAdapter } from '@deepseek-ai/dsh-llm'
@@ -32,6 +32,55 @@ interface ActiveToolCallState {
   name: string
   blockIndex: number
   accumulatedArgs: string
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new Error('Request was aborted'))
+    const timer = setTimeout(resolve, ms)
+    signal?.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer)
+        reject(new Error('Request was aborted'))
+      },
+      { once: true },
+    )
+  })
+}
+
+function isRetryableNetworkError(err: any): boolean {
+  if (!err) return false
+  const msg = String(err.message || err).toLowerCase()
+  const code = String(err.code || err.cause?.code || '').toLowerCase()
+  return (
+    msg.includes('fetch failed') ||
+    msg.includes('socket') ||
+    msg.includes('econnreset') ||
+    msg.includes('etimedout') ||
+    msg.includes('econnrefused') ||
+    msg.includes('epipe') ||
+    msg.includes('network') ||
+    msg.includes('other side closed') ||
+    msg.includes('terminated') ||
+    code.includes('err_socket') ||
+    code.includes('und_err') ||
+    code === 'econnreset' ||
+    code === 'etimedout' ||
+    code === 'eai_again'
+  )
+}
+
+function isRetryableHttpStatus(status: number): boolean {
+  return (
+    status === 429 ||
+    status === 500 ||
+    status === 502 ||
+    status === 503 ||
+    status === 504 ||
+    status === 520 ||
+    status === 524
+  )
 }
 
 function mapWireUsage(usage: any): TokenUsage {
@@ -254,19 +303,55 @@ export class GrokAdapter extends LlmAdapter {
       body.reasoning_effort = options.reasoningEffort
     }
 
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token.accessToken}`,
-      },
-      body: JSON.stringify(body),
-      signal: options.signal,
-    })
+    const maxRetries = 3
+    let response: Response | undefined
+    let lastError: any = undefined
 
-    if (!response.ok) {
-      const errText = await response.text()
-      throw new Error(`xAI Grok API error (${response.status}): ${errText}`)
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      if (options.signal?.aborted) {
+        throw new Error('Request was aborted')
+      }
+
+      try {
+        response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token.accessToken}`,
+            'Connection': 'keep-alive',
+          },
+          body: JSON.stringify(body),
+          signal: options.signal,
+        })
+
+        if (response.ok) {
+          break
+        }
+
+        const errText = await response.text()
+        if (attempt < maxRetries && isRetryableHttpStatus(response.status)) {
+          const delayMs = 1500 * Math.pow(2, attempt)
+          await sleep(delayMs, options.signal)
+          continue
+        }
+
+        throw new Error(`xAI Grok API error (${response.status}): ${errText}`)
+      } catch (err: any) {
+        if (options.signal?.aborted || err.name === 'AbortError') {
+          throw err
+        }
+        lastError = err
+        if (attempt < maxRetries && isRetryableNetworkError(err)) {
+          const delayMs = 1500 * Math.pow(2, attempt)
+          await sleep(delayMs, options.signal)
+          continue
+        }
+        throw lastError
+      }
+    }
+
+    if (!response || !response.ok) {
+      throw lastError || new Error('Failed to connect to xAI Grok API after retries')
     }
 
     if (!response.body) {

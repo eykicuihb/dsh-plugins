@@ -3,7 +3,7 @@
  * Connects to OpenAI models using Codex OAuth token via ChatGPT backend API.
  * 100% dynamically synchronizes model list from active OAuth remote session.
  * Fully supports system prompts, reasoning streams, tool definitions, multi-turn parallel tool calling,
- * and exact token accounting / usage reporting for accurate real-time session statistics.
+ * exact token accounting / usage reporting, and exponential backoff retry for network resilience.
  */
 
 import fs from 'node:fs'
@@ -36,6 +36,55 @@ interface ActiveToolCallState {
   name: string
   blockIndex: number
   accumulatedArgs: string
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new Error('Request was aborted'))
+    const timer = setTimeout(resolve, ms)
+    signal?.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer)
+        reject(new Error('Request was aborted'))
+      },
+      { once: true },
+    )
+  })
+}
+
+function isRetryableNetworkError(err: any): boolean {
+  if (!err) return false
+  const msg = String(err.message || err).toLowerCase()
+  const code = String(err.code || err.cause?.code || '').toLowerCase()
+  return (
+    msg.includes('fetch failed') ||
+    msg.includes('socket') ||
+    msg.includes('econnreset') ||
+    msg.includes('etimedout') ||
+    msg.includes('econnrefused') ||
+    msg.includes('epipe') ||
+    msg.includes('network') ||
+    msg.includes('other side closed') ||
+    msg.includes('terminated') ||
+    code.includes('err_socket') ||
+    code.includes('und_err') ||
+    code === 'econnreset' ||
+    code === 'etimedout' ||
+    code === 'eai_again'
+  )
+}
+
+function isRetryableHttpStatus(status: number): boolean {
+  return (
+    status === 429 ||
+    status === 500 ||
+    status === 502 ||
+    status === 503 ||
+    status === 504 ||
+    status === 520 ||
+    status === 524
+  )
 }
 
 function mapWireUsage(usage: any): TokenUsage {
@@ -280,13 +329,6 @@ export class CodexAdapter extends LlmAdapter {
     } else {
       // ChatGPT Backend Codex Responses API format
       const input: any[] = []
-      if (options.system) {
-        input.push({
-          type: 'message',
-          role: 'user',
-          content: [{ type: 'input_text', text: `[System Instructions]\n${options.system}` }],
-        })
-      }
 
       for (const m of options.messages || []) {
         const isAssistant = m.role === 'assistant'
@@ -354,9 +396,11 @@ export class CodexAdapter extends LlmAdapter {
 
       body = {
         model,
+        ...(options.system ? { instructions: options.system } : {}),
         input,
         stream: true,
         store: false,
+        parallel_tool_calls: true,
         ...(wireTools.length > 0 ? { tools: wireTools } : {}),
       }
       if (options.reasoningEffort && options.reasoningEffort !== 'off' && supportsReasoning) {
@@ -364,16 +408,54 @@ export class CodexAdapter extends LlmAdapter {
       }
     }
 
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      signal: options.signal,
-    })
+    const maxRetries = 3
+    let response: Response | undefined
+    let lastError: any = undefined
 
-    if (!response.ok) {
-      const errText = await response.text()
-      throw new Error(`OpenAI Codex API error (${response.status}): ${errText}`)
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      if (options.signal?.aborted) {
+        throw new Error('Request was aborted')
+      }
+
+      try {
+        response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            ...headers,
+            'Connection': 'keep-alive',
+          },
+          body: JSON.stringify(body),
+          signal: options.signal,
+        })
+
+        if (response.ok) {
+          break
+        }
+
+        const errText = await response.text()
+        if (attempt < maxRetries && isRetryableHttpStatus(response.status)) {
+          const delayMs = 1500 * Math.pow(2, attempt)
+          await sleep(delayMs, options.signal)
+          continue
+        }
+
+        throw new Error(`OpenAI Codex API error (${response.status}): ${errText}`)
+      } catch (err: any) {
+        if (options.signal?.aborted || err.name === 'AbortError') {
+          throw err
+        }
+        lastError = err
+        if (attempt < maxRetries && isRetryableNetworkError(err)) {
+          const delayMs = 1500 * Math.pow(2, attempt)
+          await sleep(delayMs, options.signal)
+          continue
+        }
+        throw lastError
+      }
+    }
+
+    if (!response || !response.ok) {
+      throw lastError || new Error('Failed to connect to OpenAI Codex API after retries')
     }
 
     if (!response.body) {
